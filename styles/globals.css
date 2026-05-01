@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+/* If you have custom colors like 'navy', we define them here in v4 */
+@theme {
+  --color-navy-900: #001f3f;
+  --color-opolo-blue: #2563eb;
+}
+
+body {
+  background-color: var(--color-slate-50);
+  color: var(--color-slate-900);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-slate-300);
+  border-radius: 10px;
+}
+
+/* Button behavior */
+button {
+  transition: all 0.2s;
+}
+button:active {
+  transform: scale(0.95);
+}
