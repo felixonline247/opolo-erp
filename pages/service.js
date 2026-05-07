@@ -1,15 +1,19 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabaseClient'
+import Link from 'next/link'
+import StaffChat from '../components/StaffChat'
 
 export default function ServiceQueue() {
   const [loading, setLoading] = useState(true)
-  const [userProfile, setUserProfile] = useState({ name: '', email: '', id: null, role: '' })
-  const [queue, setQueue] = useState([])
+  const [isChatOpen, setIsChatOpen] = useState(false) 
+  const [userProfile, setUserProfile] = useState({ name: '', email: '', id: null, role: '', balance: 0 })
+  const [pendingQueue, setPendingQueue] = useState([]) 
+  const [activeJobs, setActiveJobs] = useState([])     
+  const [supervisorView, setSupervisorView] = useState([]) 
   const [stats, setStats] = useState({ completed: 0, commission: 0 })
   
-  // Filtering States
-  const [filterMode, setFilterMode] = useState('total') 
+  const [filterMode, setFilterMode] = useState('today') 
   const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0])
 
   const router = useRouter()
@@ -31,7 +35,7 @@ export default function ServiceQueue() {
       
       const { data: profile, error } = await supabase
         .from('profiles')
-        .select('id, full_name, email, role')
+        .select('id, full_name, email, role, current_wallet_balance')
         .eq('id', session.user.id)
         .single()
 
@@ -45,9 +49,9 @@ export default function ServiceQueue() {
           name: profile.full_name, 
           email: profile.email || session.user.email, 
           id: profile.id,
-          role: profile.role 
+          role: profile.role,
+          balance: profile.current_wallet_balance || 0 
         })
-        fetchQueueAndStats(profile.id)
         setLoading(false)
       }
     } catch (err) {
@@ -58,26 +62,27 @@ export default function ServiceQueue() {
 
   const fetchQueueAndStats = async (sId) => {
     try {
-      // 1. Fetch Active Queue
-      const { data: queueData, error: qError } = await supabase
+      const { data: pendingData } = await supabase
         .from('students')
-        .select(`
-          id, 
-          full_name, 
-          phone_number,
-          jamb_profile_code, 
-          notification_sent,
-          services (
-            service_name
-          )
-        `)
-        .eq('status', 'Paid')
+        .select(`id, full_name, phone_number, status, jamb_profile_code, services(service_name)`)
+        .in('status', ['Awaiting Service', 'Started'])
         .eq('is_deleted', false)
         .order('payment_confirmed_at', { ascending: true })
 
-      if (qError) throw qError
+      const { data: activeData } = await supabase
+        .from('students')
+        .select(`id, full_name, phone_number, services(service_name)`)
+        .eq('status', 'Started')
+        .eq('started_by', sId)
 
-      // 2. Fetch Personal Stats
+      if (['Manager', 'Admin', 'Account'].includes(userProfile.role)) {
+        const { data: monitoring } = await supabase
+          .from('students')
+          .select(`id, full_name, profiles!students_started_by_fkey(full_name)`)
+          .eq('status', 'Started')
+        setSupervisorView(monitoring || [])
+      }
+
       let query = supabase
         .from('students')
         .select('id, staff_commission, completed_at')
@@ -87,118 +92,78 @@ export default function ServiceQueue() {
 
       if (filterMode === 'today') {
         const today = new Date().toISOString().split('T')[0]
-        query = query.gte('completed_at', `${today}T00:00:00`)
-                     .lte('completed_at', `${today}T23:59:59`)
+        query = query.gte('completed_at', `${today}T00:00:00`).lte('completed_at', `${today}T23:59:59`)
       } else if (filterMode === 'custom') {
-        query = query.gte('completed_at', `${customDate}T00:00:00`)
-                     .lte('completed_at', `${customDate}T23:59:59`)
+        query = query.gte('completed_at', `${customDate}T00:00:00`).lte('completed_at', `${customDate}T23:59:59`)
       }
 
-      const { data: completedData, error: sError } = await query
-      if (sError) throw sError
+      const { data: completedData } = await query
+      let totalComm = completedData?.reduce((acc, job) => acc + Number(job.staff_commission || 0), 0) || 0
 
-      let totalComm = 0
-      completedData?.forEach(job => {
-        totalComm += Number(job.staff_commission || 0)
-      })
-
-      setQueue(queueData || [])
+      setPendingQueue(pendingData || [])
+      setActiveJobs(activeData || [])
       setStats({ completed: completedData?.length || 0, commission: totalComm })
     } catch (err) {
       console.error("Data Fetch Error:", err.message)
     }
   }
 
-  const deleteStudent = async (id) => {
-    if (!confirm("Are you sure? This will remove the student from the active queue (Soft Delete).")) return
-    
+  const startJob = async (id) => {
     try {
       const { error } = await supabase
         .from('students')
         .update({ 
-          is_deleted: true, 
-          deleted_at: new Date().toISOString(),
-          deleted_by: (await supabase.auth.getSession()).data.session?.user.id 
+          status: 'Started', 
+          started_by: userProfile.id,
+          started_at: new Date().toISOString() 
         })
         .eq('id', id)
-
       if (error) throw error
-      
-      alert("Student moved to archive successfully.")
       fetchQueueAndStats(userProfile.id)
     } catch (err) {
-      alert(`Delete Error: ${err.message}`)
-    }
-  }
-
-  const sendPickupNotification = async (student) => {
-    try {
-      const { data: settings, error: settingsError } = await supabase
-        .from('settings')
-        .select('sms_template')
-        .single()
-
-      if (settingsError) throw new Error("Could not load SMS template.")
-
-      const template = settings.sms_template || "Hello {name}, your {service} is ready for pickup at Opolo CBT Resort."
-      const personalizedMessage = template
-        .replace('{name}', student.full_name)
-        .replace('{service}', student.services?.service_name || 'JAMB Service')
-
-      console.log(`Sending SMS to ${student.phone_number}: ${personalizedMessage}`)
-
-      const { error: updateError } = await supabase
-        .from('students')
-        .update({ 
-          notification_sent: true,
-          slip_ready_at: new Date().toISOString() 
-        })
-        .eq('id', student.id)
-
-      if (updateError) throw updateError
-
-      alert(`Notification Sent Successfully!\n\nMessage: "${personalizedMessage}"`)
-      fetchQueueAndStats(userProfile.id)
-      
-    } catch (err) {
-      console.error("Notification Error:", err)
-      alert(`Notification Failed: ${err.message}`)
+      alert(`Error: ${err.message}`)
     }
   }
 
   const completeJob = async (studentId) => {
-    if (!confirm("Confirm completion? This will record your commission.")) return
+    if (!confirm("Confirm completion? This will finalize the task and record your commission.")) return
     try {
+      // 1. Fetch student AND explicitly fetch related service data
       const { data: student, error: fetchError } = await supabase
         .from('students')
-        .select('amount_paid, institution_cost, service_id')
+        .select(`
+          amount_paid, 
+          institution_cost, 
+          service_id, 
+          services (
+            commission_type, 
+            commission_value
+          )
+        `)
         .eq('id', studentId)
         .single()
 
       if (fetchError) throw fetchError
 
-      const { data: service, error: serviceError } = await supabase
-        .from('services')
-        .select('*')
-        .eq('id', student.service_id)
-        .single()
-
-      if (serviceError) throw serviceError
-
-      const commType = service.commission_type || service.comm_type || 'fixed'
-      const commVal = Number(service.commission_value || service.comm_value || 350)
+      // 2. Safeguard: Check if service data exists before proceeding
+      const service = student?.services;
+      if (!service) {
+        throw new Error("Cannot calculate commission: Service details are missing for this student.");
+      }
       
-      let calculatedComm = 0
-      const paid = Number(student.amount_paid) || 0
-      const inst = Number(student.institution_cost) || 0
-      const netProfit = paid - inst
+      let calculatedComm = 0;
+      const paid = Number(student.amount_paid) || 0;
+      const inst = Number(student.institution_cost) || 0;
+      const netProfit = paid - inst;
 
-      if (commType === 'percentage' || commType === 'percent') {
-        calculatedComm = (netProfit * (commVal / 100))
+      // 3. Commission Logic
+      if (service.commission_type === 'percentage') {
+        calculatedComm = (netProfit * (Number(service.commission_value) / 100));
       } else {
-        calculatedComm = commVal
+        calculatedComm = Number(service.commission_value || 0);
       }
 
+      // 4. Update Student Status to Completed
       const { error: updateError } = await supabase
         .from('students')
         .update({ 
@@ -211,12 +176,13 @@ export default function ServiceQueue() {
 
       if (updateError) throw updateError
       
+      // 5. Refresh UI
+      checkServiceAccess(); 
       fetchQueueAndStats(userProfile.id)
-      alert(`Success! Job completed. ₦${calculatedComm.toLocaleString()} recorded.`)
-      
+      alert(`Task Completed! ₦${calculatedComm.toLocaleString()} commission recorded.`)
     } catch (err) {
-      console.error("Detailed Error:", err)
-      alert(`Error: ${err.message}`)
+      console.error("Completion Process Error:", err)
+      alert(`Error: ${err.message}`);
     }
   }
 
@@ -226,142 +192,138 @@ export default function ServiceQueue() {
   }
 
   if (loading) return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50">
-      <div className="text-center font-black text-blue-900 uppercase tracking-widest animate-pulse">
-        Initializing Service Station...
-      </div>
+    <div className="min-h-screen flex flex-col items-center justify-center bg-white uppercase font-black text-blue-900 tracking-widest animate-pulse">
+      Loading Service Station...
     </div>
   )
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans p-4 md:p-12">
+    <div className="min-h-screen bg-slate-50 font-sans p-4 md:p-12 relative overflow-x-hidden">
       <div className="max-w-6xl mx-auto">
         
-        {/* HEADER */}
         <header className="flex justify-between items-start mb-8">
           <div>
-            <h1 className="text-2xl md:text-3xl font-black text-blue-950 uppercase tracking-tighter">Service Queue</h1>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
-              {userProfile.name} • {userProfile.role}
-            </p>
+            <h1 className="text-2xl md:text-4xl font-black text-blue-950 uppercase italic tracking-tighter">Service Station</h1>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em]">{userProfile.name} • {userProfile.role}</p>
           </div>
-          <button onClick={handleLogout} className="px-4 py-2 border-2 border-red-100 text-red-500 rounded-full text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all">
-            Logout
-          </button>
+          <button onClick={handleLogout} className="px-6 py-2 border-2 border-red-100 text-red-500 rounded-full text-[10px] font-black uppercase hover:bg-red-500 hover:text-white transition-all">Logout</button>
         </header>
 
-        {/* STATS FILTER BAR */}
-        <div className="flex flex-wrap items-center gap-3 mb-8 bg-white p-3 md:p-4 rounded-[2rem] border border-slate-200 shadow-sm">
-          <p className="text-[9px] font-black text-blue-950 uppercase tracking-widest ml-2">Filters:</p>
-          <div className="flex bg-slate-100 p-1 rounded-xl">
-            {['today', 'total', 'custom'].map((mode) => (
-              <button 
-                key={mode}
-                onClick={() => setFilterMode(mode)}
-                className={`px-3 py-2 rounded-lg text-[9px] md:text-[10px] font-black uppercase transition-all ${filterMode === mode ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}
-              >
-                {mode}
-              </button>
-            ))}
-          </div>
-          
-          {filterMode === 'custom' && (
-            <input 
-              type="date" 
-              className="bg-slate-50 border-none ring-1 ring-slate-200 rounded-xl px-3 py-2 text-[10px] font-bold text-blue-950 outline-none focus:ring-blue-500"
-              value={customDate}
-              onChange={(e) => setCustomDate(e.target.value)}
-            />
-          )}
-
-          <button 
-            onClick={() => fetchQueueAndStats(userProfile.id)}
-            className="ml-auto px-4 py-2 text-blue-600 font-bold text-[10px] uppercase hover:underline"
-          >
-            Refresh
-          </button>
-        </div>
-
         {/* STATS CARDS */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-10">
-          <div className="bg-white p-6 md:p-8 rounded-[2rem] border border-slate-200 shadow-sm">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">
-              Jobs {filterMode === 'total' ? 'Overall' : filterMode === 'today' ? 'Today' : `on ${customDate}`}
-            </p>
-            <h2 className="text-3xl md:text-4xl font-black text-blue-950">{stats.completed}</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10">
+          <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
+            <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Jobs ({filterMode})</p>
+            <h2 className="text-4xl font-black text-blue-950 tracking-tighter">{stats.completed}</h2>
+            <div className="mt-6 flex gap-2">
+               {['today', 'total', 'custom'].map(m => (
+                 <button key={m} onClick={() => setFilterMode(m)} className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${filterMode === m ? 'bg-blue-900 text-white shadow-lg' : 'bg-slate-100 text-slate-400'}`}>{m}</button>
+               ))}
+            </div>
           </div>
-          <div className="bg-blue-900 p-6 md:p-8 rounded-[2rem] text-white shadow-xl shadow-blue-900/30">
-            <p className="text-[10px] font-bold uppercase opacity-60 tracking-widest mb-2">
-              Commission {filterMode === 'total' ? '(Total)' : filterMode === 'today' ? '(Today)' : `(${customDate})`}
-            </p>
-            <h2 className="text-3xl md:text-4xl font-black">₦{stats.commission.toLocaleString()}</h2>
+
+          <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
+            <p className="text-[10px] font-black text-blue-600 uppercase mb-2 tracking-widest">Commission</p>
+            <h2 className="text-4xl font-black tracking-tighter text-blue-600">₦{stats.commission.toLocaleString()}</h2>
           </div>
+
+          <Link href="/payment-wallet">
+            <div className="bg-blue-900 p-8 rounded-[2.5rem] text-white shadow-2xl shadow-blue-900/20 cursor-pointer hover:scale-[1.02] transition-all group overflow-hidden">
+              <p className="text-[10px] font-black uppercase opacity-60 mb-2 tracking-widest">Wallet</p>
+              <h2 className={`text-4xl font-black tracking-tighter ${userProfile.balance < 1000 ? 'text-red-400' : 'text-white'}`}>
+                ₦{userProfile.balance.toLocaleString()}
+              </h2>
+              <div className="mt-6 text-[9px] font-black uppercase tracking-widest opacity-80 group-hover:opacity-100">Top Up →</div>
+            </div>
+          </Link>
         </div>
 
-        {/* QUEUE LIST */}
-        <div className="flex justify-between items-center mb-6 ml-2">
-          <h3 className="text-[10px] font-black text-blue-900 uppercase tracking-[0.3em]">Pending Queue ({queue.length})</h3>
-        </div>
-
-        <div className="grid gap-4">
-          {queue.map((student, index) => (
-            <div key={student.id || `student-${index}`} className="bg-white p-5 md:p-6 rounded-[2rem] border border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-6 hover:border-blue-200 transition-colors">
-              
-              {/* Left: Info */}
-              <div className="w-full">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <p className="font-black text-blue-950 uppercase text-lg leading-tight break-words">{student.full_name}</p>
-                  {student.notification_sent && (
-                    <span className="text-[8px] bg-green-100 text-green-600 px-2 py-0.5 rounded-full font-black uppercase">Notified</span>
-                  )}
+        {/* ACTIVE WORKLIST */}
+        {activeJobs.length > 0 && (
+          <div className="mb-12">
+            <h3 className="text-[11px] font-black text-green-600 uppercase mb-4 tracking-[0.2em]">⚡ Active Tasks</h3>
+            <div className="grid gap-4">
+              {activeJobs.map(job => (
+                <div key={job.id} className="bg-white border-2 border-green-500 p-8 rounded-[3rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-xl">
+                  <div>
+                    <p className="font-black text-blue-950 text-2xl uppercase tracking-tighter italic">{job.full_name}</p>
+                    <p className="text-[10px] font-black text-green-600 uppercase bg-green-50 px-3 py-1 rounded-full inline-block mt-2">{job.services?.service_name}</p>
+                  </div>
+                  <button onClick={() => completeJob(job.id)} className="w-full md:w-auto bg-green-500 text-white px-10 py-4 rounded-2xl text-[11px] font-black uppercase hover:bg-green-600 transition-all">Finish Task</button>
                 </div>
-                <div className="flex flex-wrap gap-3 mt-2">
-                  <span className="text-[9px] font-bold text-blue-600 uppercase bg-blue-50 px-2 py-1 rounded">
-                    {student.services?.service_name || 'General Service'}
-                  </span>
-                  <span className="text-[9px] font-bold text-slate-400 uppercase">
-                    ID: {student.jamb_profile_code}
-                  </span>
-                </div>
-              </div>
-              
-              {/* Right: Actions (Responsive buttons) */}
-              <div className="grid grid-cols-4 md:flex gap-2 w-full md:w-auto">
-                <button 
-                  onClick={() => completeJob(student.id)}
-                  className="col-span-4 md:w-32 py-4 bg-green-500 hover:bg-blue-950 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all shadow-md active:scale-95"
-                >
-                  Complete
-                </button>
-                
-                <button 
-                  onClick={() => sendPickupNotification(student)}
-                  className={`col-span-3 md:w-28 py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all ${student.notification_sent ? 'bg-slate-100 text-slate-400' : 'bg-amber-50 text-amber-600 border border-amber-200'}`}
-                >
-                  {student.notification_sent ? 'Resend' : 'SMS'}
-                </button>
-
-                {(userProfile.role === 'Manager' || userProfile.role === 'Admin') && (
-                  <button 
-                    onClick={() => deleteStudent(student.id)}
-                    className="col-span-1 p-4 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded-2xl transition-all flex items-center justify-center"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                  </button>
-                )}
-              </div>
+              ))}
             </div>
-          ))}
+          </div>
+        )}
 
-          {queue.length === 0 && (
-            <div className="p-16 text-center border-2 border-dashed border-slate-200 rounded-[3rem]">
-              <p className="text-slate-400 font-bold uppercase text-[10px] tracking-widest">Queue is empty.</p>
+        {/* PENDING QUEUE */}
+        <div className="bg-white rounded-[3rem] border border-slate-200 overflow-hidden shadow-sm">
+            <div className="p-8 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+               <h3 className="text-[11px] font-black text-blue-950 uppercase tracking-[0.2em]">Queue ({pendingQueue.length})</h3>
+               <span className="w-3 h-3 bg-blue-500 rounded-full animate-ping"></span>
             </div>
-          )}
+            <div className="divide-y divide-slate-100">
+             {pendingQueue.map((student) => (
+               <div key={student.id} className="p-8 flex flex-col md:flex-row justify-between items-center gap-6 hover:bg-blue-50/30 transition-all">
+                 <div className="text-center md:text-left">
+                    <p className="font-black text-blue-950 uppercase tracking-tight text-lg">{student.full_name}</p>
+                    <p className="text-[10px] font-bold text-slate-400 mt-1 uppercase">{student.services?.service_name}</p>
+                    <p className="text-[9px] font-black text-blue-500 mt-1">STATUS: {student.status}</p>
+                 </div>
+                 {student.status === 'Started' ? (
+                     <button disabled className="bg-slate-100 text-slate-400 px-8 py-3 rounded-2xl text-[10px] font-black uppercase cursor-not-allowed">In Progress</button>
+                 ) : (
+                    <button onClick={() => startJob(student.id)} className="bg-white border-2 border-slate-100 text-blue-950 px-8 py-3 rounded-2xl text-[10px] font-black uppercase hover:border-blue-900 transition-all">Start Task</button>
+                 )}
+               </div>
+             ))}
+             {pendingQueue.length === 0 && (
+               <div className="p-20 text-center text-slate-300 font-black uppercase text-[10px] tracking-[0.5em]">Station Clear</div>
+             )}
+            </div>
         </div>
       </div>
+
+      {/* --- SLIDE-OUT CHAT SYSTEM --- */}
+      <button 
+        onClick={() => setIsChatOpen(!isChatOpen)}
+        className={`fixed bottom-8 right-8 z-[70] flex items-center justify-center w-16 h-16 rounded-full shadow-2xl transition-all duration-300 ${
+          isChatOpen ? 'bg-red-500 rotate-90' : 'bg-blue-950 hover:scale-110'
+        }`}
+      >
+        {isChatOpen ? (
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>
+        ) : (
+          <div className="relative">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+            <span className="absolute -top-1 -right-1 flex h-4 w-4">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-4 w-4 bg-blue-500 border-2 border-white"></span>
+            </span>
+          </div>
+        )}
+      </button>
+
+      {isChatOpen && (
+        <div 
+          className="fixed inset-0 bg-blue-950/40 backdrop-blur-sm z-[50] transition-opacity"
+          onClick={() => setIsChatOpen(false)}
+        />
+      )}
+
+      <aside className={`fixed top-0 right-0 h-full w-full md:w-[450px] bg-white z-[60] shadow-2xl transition-transform duration-500 ease-in-out transform ${
+        isChatOpen ? 'translate-x-0' : 'translate-x-full'
+      }`}>
+        <div className="h-full flex flex-col pt-6">
+          <div className="px-8 flex justify-between items-center mb-4">
+             <h2 className="text-xs font-black text-blue-950 uppercase tracking-[0.2em]">Staff Comms</h2>
+             <button onClick={() => setIsChatOpen(false)} className="text-[10px] font-black text-slate-300 hover:text-red-500 uppercase tracking-widest">Close →</button>
+          </div>
+          <div className="flex-1 overflow-hidden">
+             <StaffChat currentUser={userProfile} />
+          </div>
+        </div>
+      </aside>
+
     </div>
   )
 }

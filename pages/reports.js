@@ -2,185 +2,201 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabaseClient'
 import Link from 'next/link'
+import { logActivity } from '../lib/logger' 
 
 export default function CommissionReport() {
   const [report, setReport] = useState([])
   const [totalPayout, setTotalPayout] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [mounted, setMounted] = useState(false)
+  const [processingId, setProcessingId] = useState(null)
   const router = useRouter()
   
-  const today = new Date().toISOString().split('T')[0]
-  const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]
-  const [startDate, setStartDate] = useState(firstDay)
-  const [endDate, setEndDate] = useState(today)
+  const [startDate, setStartDate] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0])
+  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0])
 
   useEffect(() => {
-    setMounted(true)
     checkManagerAccess()
     fetchCommissionData()
-  }, [])
+  }, [startDate, endDate])
 
   const checkManagerAccess = async () => {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) return router.push('/')
     const { data: profile } = await supabase.from('profiles').select('role').eq('id', session.user.id).single()
-    const allowed = ['Manager', 'Admin', 'Account'];
+    const allowed = ['Manager', 'Admin', 'Account', 'Supervisor'];
     if (!allowed.includes(profile?.role)) router.push('/dashboard')
+  }
+
+  const setRange = (type) => {
+    const now = new Date();
+    let start = new Date();
+    if (type === 'day') start = new Date(now.setHours(0,0,0,0));
+    if (type === 'week') start.setDate(now.getDate() - 7);
+    if (type === 'month') start = new Date(now.getFullYear(), now.getMonth(), 1);
+    
+    setStartDate(start.toISOString().split('T')[0]);
+    setEndDate(new Date().toISOString().split('T')[0]);
   }
 
   const fetchCommissionData = async () => {
     setLoading(true)
     try {
-      // 1. Fetch completed students with commission
+      // UPDATED: Now fetching from 'students' table to match service.js logic
       const { data: jobs, error: jobsError } = await supabase
         .from('students')
-        .select('staff_commission, completed_by, completed_at')
-        .eq('status', 'Completed')
-        .not('completed_by', 'is', null)
+        .select(`
+          staff_commission, 
+          completed_by, 
+          completed_at,
+          is_payout_completed,
+          full_name
+        `)
+        .eq('status', 'Completed') // Changed to match capital 'C' from service.js
+        .eq('is_payout_completed', false) 
         .gte('completed_at', `${startDate}T00:00:00`)
         .lte('completed_at', `${endDate}T23:59:59`)
 
       if (jobsError) throw jobsError
 
-      if (!jobs || jobs.length === 0) {
-        setReport([])
-        setTotalPayout(0)
-        return
-      }
+      const { data: profiles } = await supabase.from('profiles').select('id, full_name, email, commission_value')
 
-      // 2. Fetch all profiles to map IDs to Names/Emails
-      const { data: profiles, error: profileError } = await supabase
-        .from('profiles')
-        .select('id, full_name, email')
-
-      if (profileError) throw profileError
-
-      // 3. Create a lookup map for profiles
       const profileMap = {}
-      profiles.forEach(p => { profileMap[p.id] = p })
+      profiles?.forEach(p => { profileMap[p.id] = p })
 
-      // 4. Group and Sum
       const grouped = jobs.reduce((acc, curr) => {
-        const staffId = curr.completed_by
-        const profile = profileMap[staffId] || { full_name: 'Unknown Staff', email: 'N/A' }
+        const staffId = curr.completed_by // Changed from assigned_staff_id
+        if (!staffId || !profileMap[staffId]) return acc
         
         if (!acc[staffId]) {
           acc[staffId] = { 
-            name: profile.full_name, 
-            email: profile.email, 
+            id: staffId,
+            name: profileMap[staffId].full_name, 
+            email: profileMap[staffId].email, 
+            wallet_balance: profileMap[staffId].commission_value || 0,
             jobs: 0, 
-            total: 0 
+            total_unpaid: 0 
           }
         }
         acc[staffId].jobs += 1
-        acc[staffId].total += Number(curr.staff_commission || 0)
+        acc[staffId].total_unpaid += Number(curr.staff_commission || 0) // Changed from actual_commission
         return acc
       }, {})
 
       const reportArray = Object.values(grouped)
       setReport(reportArray)
-      setTotalPayout(reportArray.reduce((sum, item) => sum + item.total, 0))
+      setTotalPayout(reportArray.reduce((sum, item) => sum + item.total_unpaid, 0))
       
     } catch (err) {
-      console.error("Report System Error:", err.message)
+      console.error("Report error:", err.message)
     } finally {
       setLoading(false)
     }
   }
 
-  const exportToCSV = () => {
-    const headers = ["Staff Name", "Staff Email", "Jobs Completed", "Total Commission (NGN)"]
-    const rows = report.map(staff => [staff.name, staff.email, staff.jobs, staff.total])
-    let csvContent = "data:text/csv;charset=utf-8," 
-      + [headers, ...rows].map(e => e.join(",")).join("\n")
-    const encodedUri = encodeURI(csvContent)
-    const link = document.createElement("a")
-    link.setAttribute("href", encodedUri)
-    link.setAttribute("download", `Opolo_Payouts_${startDate}_to_${endDate}.csv`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+  const handlePayout = async (staff) => {
+    if (!confirm(`Mark ₦${staff.total_unpaid.toLocaleString()} as paid to ${staff.name}?`)) return
+    setProcessingId(staff.id)
+
+    try {
+      // 1. Update Profile (Subtract from their commission balance if you track it there)
+      const newBalance = Math.max(0, staff.wallet_balance - staff.total_unpaid)
+      await supabase.from('profiles').update({ commission_value: newBalance }).eq('id', staff.id)
+
+      // 2. Mark all jobs in this range for this staff as paid in the 'students' table
+      const { error: updateError } = await supabase.from('students')
+        .update({ is_payout_completed: true })
+        .eq('completed_by', staff.id)
+        .eq('status', 'Completed')
+        .gte('completed_at', `${startDate}T00:00:00`)
+        .lte('completed_at', `${endDate}T23:59:59`)
+
+      if (updateError) throw updateError
+
+      // 3. Log Activity
+      await logActivity("Payout", `Paid ₦${staff.total_unpaid.toLocaleString()} commission to ${staff.name}`)
+      
+      alert("Payment processed and records updated.")
+      fetchCommissionData()
+    } catch (err) {
+      alert("Payout failed: " + err.message)
+    } finally {
+      setProcessingId(null)
+    }
   }
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans">
       <div className="max-w-5xl mx-auto">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-4 print:hidden">
+        <div className="flex flex-col md:flex-row justify-between mb-8 gap-4">
           <div>
             <h1 className="text-3xl font-black text-blue-950 uppercase tracking-tighter">Staff Payouts</h1>
-            <Link href="/manager" className="text-[10px] font-black text-blue-600 uppercase tracking-widest hover:underline">← Back to Command Center</Link>
+            <div className="flex gap-2 mt-2">
+              {['day', 'week', 'month'].map(t => (
+                <button key={t} onClick={() => setRange(t)} className="text-[9px] font-black bg-white border px-4 py-1.5 rounded-full hover:bg-blue-900 hover:text-white uppercase transition-all tracking-widest">
+                  This {t}
+                </button>
+              ))}
+              <Link href="/manager" className="text-[9px] font-black bg-slate-200 text-slate-600 border px-4 py-1.5 rounded-full hover:bg-slate-300 uppercase transition-all tracking-widest">
+                Dashboard
+              </Link>
+            </div>
           </div>
           
-          <div className="flex items-center gap-2 bg-white p-2 rounded-2xl shadow-sm border border-slate-200">
-            <div className="flex flex-col">
-              <label className="text-[8px] font-black ml-1 text-slate-400 uppercase">From</label>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="text-xs font-bold outline-none px-2" />
-            </div>
-            <div className="h-8 w-px bg-slate-100"></div>
-            <div className="flex flex-col">
-              <label className="text-[8px] font-black ml-1 text-slate-400 uppercase">To</label>
-              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="text-xs font-bold outline-none px-2" />
-            </div>
-            <button onClick={fetchCommissionData} className="bg-blue-900 text-white px-4 py-2 rounded-xl font-black text-[10px] hover:bg-black transition-all">FILTER</button>
-          </div>
-
-          <div className="flex gap-2">
-            <button onClick={exportToCSV} className="bg-green-600 text-white px-4 py-2 rounded-xl font-black text-[10px] shadow-lg shadow-green-900/20">CSV EXCEL</button>
-            <button onClick={() => window.print()} className="bg-slate-800 text-white px-4 py-2 rounded-xl font-black text-[10px] shadow-lg shadow-slate-900/20">PRINT PDF</button>
+          <div className="flex items-center gap-2 bg-white p-2 rounded-2xl border border-slate-200 shadow-sm">
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="text-[10px] font-bold outline-none px-2 uppercase" />
+            <span className="text-slate-300 font-bold">→</span>
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="text-[10px] font-bold outline-none px-2 uppercase" />
+            <button onClick={fetchCommissionData} className="bg-blue-900 text-white px-5 py-2 rounded-xl font-black text-[9px] uppercase tracking-widest hover:bg-blue-800">Filter</button>
           </div>
         </div>
 
-        <div className="print:m-0 print:p-0">
-          <div className="hidden print:block mb-8 text-center border-b pb-4">
-            <h1 className="text-2xl font-black text-blue-950">OPOLO CBT RESORT</h1>
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Payout Report: {startDate} to {endDate}</p>
+        <div className="bg-blue-900 rounded-[2.5rem] p-10 mb-8 text-white shadow-2xl shadow-blue-900/20 relative overflow-hidden">
+          <div className="relative z-10">
+            <p className="text-[10px] font-black uppercase opacity-60 tracking-[0.2em] mb-2">Total Unpaid Commission</p>
+            <h2 className="text-6xl font-black tracking-tighter italic">₦{totalPayout.toLocaleString()}</h2>
           </div>
+          <div className="absolute top-[-20%] right-[-10%] w-64 h-64 bg-white/5 rounded-full blur-3xl"></div>
+        </div>
 
-          <div className="bg-blue-900 rounded-3xl p-8 mb-8 text-white shadow-2xl relative overflow-hidden print:bg-slate-50 print:text-black print:shadow-none print:border print:border-slate-200">
-            <div className="relative z-10">
-              <p className="text-xs font-bold uppercase opacity-60 tracking-widest print:opacity-100 print:text-slate-500">Total Payable for selected period</p>
-              <h2 className="text-5xl font-black mt-2">₦{totalPayout.toLocaleString()}</h2>
-            </div>
-            <div className="absolute -right-10 -bottom-10 w-40 h-40 bg-blue-800 rounded-full opacity-50 print:hidden"></div>
-          </div>
-
-          <div className="bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-100 print:shadow-none print:border-slate-200">
-            <table className="w-full text-left">
-              <thead className="bg-slate-900 text-white print:bg-slate-100 print:text-slate-900">
-                <tr className="text-[10px] font-black uppercase tracking-widest">
-                  <th className="p-6">Staff Member</th>
-                  <th className="p-6 text-center">Jobs</th>
-                  <th className="p-6 text-right">Commission</th>
+        <div className="bg-white rounded-[2.5rem] shadow-xl overflow-hidden border border-slate-100">
+          <table className="w-full text-left border-collapse">
+            <thead className="bg-slate-900 text-white">
+              <tr className="text-[10px] font-black uppercase tracking-widest">
+                <th className="p-7">Staff Member</th>
+                <th className="p-7 text-center">Unpaid Jobs</th>
+                <th className="p-7 text-right">Commission Due</th>
+                <th className="p-7 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {loading ? (
+                <tr><td colSpan="4" className="p-20 text-center font-black text-slate-300 uppercase tracking-widest animate-pulse">Syncing Records...</td></tr>
+              ) : report.length === 0 ? (
+                <tr><td colSpan="4" className="p-20 text-center font-bold text-slate-400 italic">No pending payouts found for this period.</td></tr>
+              ) : report.map((staff) => (
+                <tr key={staff.id} className="hover:bg-blue-50/30 transition-colors">
+                  <td className="p-7">
+                    <p className="font-black text-blue-950 text-sm uppercase tracking-tight">{staff.name}</p>
+                    <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">{staff.email}</p>
+                  </td>
+                  <td className="p-7 text-center">
+                    <span className="font-black text-blue-600 bg-blue-50 px-4 py-1.5 rounded-full text-[10px] uppercase">{staff.jobs} Jobs</span>
+                  </td>
+                  <td className="p-7 text-right font-black text-2xl text-blue-950 tracking-tighter">₦{staff.total_unpaid.toLocaleString()}</td>
+                  <td className="p-7 text-right">
+                    <button 
+                      onClick={() => handlePayout(staff)}
+                      disabled={processingId === staff.id}
+                      className="bg-green-500 text-white px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-black transition-all shadow-lg shadow-green-100 disabled:bg-slate-200 disabled:shadow-none"
+                    >
+                      {processingId === staff.id ? 'Processing...' : 'Mark as Paid'}
+                    </button>
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {loading ? (
-                  <tr><td colSpan="3" className="p-10 text-center font-bold text-slate-400 uppercase tracking-tighter animate-pulse">Scanning Database...</td></tr>
-                ) : report.length === 0 ? (
-                  <tr><td colSpan="3" className="p-10 text-center text-slate-400 italic">No completed jobs found. Tip: Ensure jobs are marked "Completed" in the Service Queue.</td></tr>
-                ) : (
-                  report.map((staff) => (
-                    <tr key={staff.email} className="hover:bg-blue-50/30 transition-colors">
-                      <td className="p-6">
-                        <p className="font-bold text-slate-800 text-sm uppercase">{staff.name}</p>
-                        <p className="text-[9px] text-slate-400 font-medium lowercase tracking-tighter">{staff.email}</p>
-                      </td>
-                      <td className="p-6 text-center">
-                        <span className="font-black text-blue-600 bg-blue-50 px-3 py-1 rounded-full text-xs">{staff.jobs}</span>
-                      </td>
-                      <td className="p-6 text-right font-black text-xl text-green-600">₦{staff.total.toLocaleString()}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </table>
         </div>
-        
-        <p className="mt-6 text-[10px] text-center text-slate-400 font-bold uppercase tracking-widest">
-          Opolo CBT Resort • Internal Financial Document • Generated: {mounted ? new Date().toLocaleDateString() : '...'}
-        </p>
       </div>
     </div>
   )

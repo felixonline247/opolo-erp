@@ -22,10 +22,11 @@ export default function PendingJobs() {
 
   const fetchPendingJobs = async () => {
     setLoading(true)
+    // UPDATED: Now fetches both Paid (waiting) and Started (active) jobs
     const { data, error } = await supabase
       .from('students')
-      .select('id, full_name, jamb_profile_code, amount_paid, created_at')
-      .eq('status', 'Paid')
+      .select('id, full_name, jamb_profile_code, amount_paid, created_at, status')
+      .in('status', ['Paid', 'Started'])
       .order('created_at', { ascending: false })
 
     if (!error) setJobs(data)
@@ -69,7 +70,7 @@ export default function PendingJobs() {
             <thead className="bg-slate-900 text-white">
               <tr className="text-[10px] font-black uppercase tracking-widest">
                 <th className="p-6">Student Name</th>
-                <th className="p-6">Profile Code</th>
+                <th className="p-6">Status</th>
                 <th className="p-6">Amount</th>
                 <th className="p-6 text-right">Actions</th>
               </tr>
@@ -82,15 +83,22 @@ export default function PendingJobs() {
               ) : (
                 jobs.map((job) => (
                   <tr key={job.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="p-6 font-bold text-slate-800">{job.full_name}</td>
-                    <td className="p-6 text-slate-500 font-mono text-xs">{job.jamb_profile_code}</td>
+                    <td className="p-6">
+                        <p className="font-bold text-slate-800">{job.full_name}</p>
+                        <p className="text-[9px] font-mono text-slate-400">{job.jamb_profile_code}</p>
+                    </td>
+                    <td className="p-6">
+                        <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${job.status === 'Started' ? 'bg-green-100 text-green-600 animate-pulse' : 'bg-blue-100 text-blue-600'}`}>
+                            {job.status === 'Started' ? '⚡ In Progress' : 'Waiting'}
+                        </span>
+                    </td>
                     <td className="p-6 font-bold text-blue-900">₦{Number(job.amount_paid).toLocaleString()}</td>
                     <td className="p-6 text-right flex justify-end gap-2">
                       <button 
                         onClick={() => handleCancel(job.id)}
                         className="px-4 py-2 bg-amber-100 text-amber-700 rounded-xl font-black text-[9px] uppercase hover:bg-amber-200 transition-all"
                       >
-                        Cancel Job
+                        Cancel
                       </button>
                       <button 
                         onClick={() => handleDelete(job.id)}

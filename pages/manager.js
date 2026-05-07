@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabaseClient'
 import Link from 'next/link'
+import StaffChat from '../components/StaffChat' // Added import
 
 export default function ManagerDashboard() {
   const [loading, setLoading] = useState(true)
+  const [isChatOpen, setIsChatOpen] = useState(false) // Sidebar State
+  const [userProfile, setUserProfile] = useState({ name: '', email: '', id: null, role: '' })
   const [stats, setStats] = useState({ 
     gross: 0, 
     commissions: 0, 
@@ -12,7 +15,7 @@ export default function ManagerDashboard() {
     netProfit: 0,
     count: 0 
   })
-  const [filterMode, setFilterMode] = useState('total') // 'today', 'weekly', 'monthly', 'total', 'custom'
+  const [filterMode, setFilterMode] = useState('total') 
   const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0])
   const router = useRouter()
 
@@ -25,21 +28,31 @@ export default function ManagerDashboard() {
   }, [filterMode, customDate])
 
   const checkAccess = async () => {
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session) return router.push('/')
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return router.push('/')
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', session.user.id)
-      .single()
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('id, full_name, email, role')
+        .eq('id', session.user.id)
+        .single()
 
-    // Access restricted to Manager or Admin
-    if (profile?.role !== 'Manager' && profile?.role !== 'Admin') {
-      alert("Access Denied: Management Privileges Required")
-      router.push('/dashboard')
-    } else {
-      setLoading(false)
+      if (profile?.role !== 'Manager' && profile?.role !== 'Admin') {
+        alert("Access Denied: Management Privileges Required")
+        router.push('/dashboard')
+      } else {
+        setUserProfile({
+          name: profile.full_name,
+          email: profile.email || session.user.email,
+          id: profile.id,
+          role: profile.role
+        })
+        setLoading(false)
+      }
+    } catch (err) {
+      console.error("Access Error:", err)
+      router.push('/')
     }
   }
 
@@ -52,15 +65,9 @@ export default function ManagerDashboard() {
     try {
       let query = supabase
         .from('students')
-        .select(`
-          amount_paid, 
-          institution_cost, 
-          staff_commission,
-          status,
-          completed_at,
-          created_at
-        `)
+        .select(`amount_paid, institution_cost, staff_commission, status, created_at`)
         .or('status.eq.Paid,status.eq.Completed,status.eq.Pending')
+        .eq('is_deleted', false)
 
       const now = new Date()
       if (filterMode === 'today') {
@@ -73,20 +80,17 @@ export default function ManagerDashboard() {
         const lastMonth = new Date(new Date().setMonth(now.getMonth() - 1)).toISOString()
         query = query.gte('created_at', lastMonth)
       } else if (filterMode === 'custom') {
-        query = query.gte('created_at', `${customDate}T00:00:00`)
-                     .lte('created_at', `${customDate}T23:59:59`)
+        query = query.gte('created_at', `${customDate}T00:00:00`).lte('created_at', `${customDate}T23:59:59`)
       }
 
       const { data, error } = await query
       if (error) throw error
 
       let totals = { gross: 0, commissions: 0, remittance: 0, net: 0 }
-
       data?.forEach(item => {
         const paid = Number(item.amount_paid) || 0
         const inst = Number(item.institution_cost) || 0
         const comm = Number(item.staff_commission) || 0
-
         totals.gross += paid
         totals.remittance += inst
         totals.commissions += comm
@@ -112,14 +116,14 @@ export default function ManagerDashboard() {
   )
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans p-6 md:p-12">
+    <div className="min-h-screen bg-slate-50 font-sans p-6 md:p-12 relative overflow-x-hidden">
       <div className="max-w-7xl mx-auto">
         
         {/* Header Section */}
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-12">
           <div>
             <h1 className="text-4xl font-black text-blue-950 uppercase tracking-tighter leading-none">Command Center</h1>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-2">Opolo CBT Resort • Administrative Overview</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-2">Opolo CBT Resort • Manager Portal</p>
           </div>
           
           <div className="flex flex-wrap items-center gap-3">
@@ -157,19 +161,16 @@ export default function ManagerDashboard() {
           <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Gross Revenue</p>
             <h2 className="text-3xl font-black text-blue-950">₦{stats.gross.toLocaleString()}</h2>
-            <p className="text-[9px] text-slate-400 mt-2 font-medium italic">Total intake (no deductions)</p>
           </div>
 
           <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
             <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-3">Staff Commissions</p>
             <h2 className="text-3xl font-black text-blue-600">₦{stats.commissions.toLocaleString()}</h2>
-            <p className="text-[9px] text-slate-400 mt-2 font-medium italic">Payable to processing team</p>
           </div>
 
           <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
             <p className="text-[10px] font-bold text-red-500 uppercase tracking-widest mb-3">Institution Costs</p>
             <h2 className="text-3xl font-black text-red-600">₦{stats.remittance.toLocaleString()}</h2>
-            <p className="text-[9px] text-slate-400 mt-2 font-medium italic">Remittance (e.g. JAMB fees)</p>
           </div>
 
           <div className="bg-blue-950 p-8 rounded-[2.5rem] text-white shadow-2xl relative overflow-hidden">
@@ -181,53 +182,45 @@ export default function ManagerDashboard() {
 
         {/* Administrative Tools */}
         <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-6 ml-2">Administrative Tools</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
-          <Link href="/reports" className="group">
-            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-xl hover:border-blue-200 transition-all cursor-pointer h-full">
-              <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-blue-900 transition-colors">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-900 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mb-12">
+          
+          <Link href="/manager-wallets" className="group">
+            <div className="bg-blue-900 p-8 rounded-[2.5rem] border border-blue-800 shadow-sm hover:shadow-xl hover:scale-[1.02] transition-all cursor-pointer h-full">
+              <div className="w-12 h-12 bg-blue-800 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-white transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white group-hover:text-blue-900" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
               </div>
-              <h4 className="text-xl font-black text-slate-800">Financial Reports</h4>
-              <p className="text-slate-400 text-sm mt-2 font-medium">Export CSV data and analyze performance for the 2026 JAMB cycle.</p>
+              <h4 className="text-xl font-black text-white">Wallet Control</h4>
+              <p className="text-blue-200 text-sm mt-2 font-medium">Add daily float cash to staff and reset balances.</p>
             </div>
           </Link>
 
-          {/* NEW TOOL: Pending Job Control */}
+          <Link href="/reports" className="group">
+            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-xl transition-all cursor-pointer h-full">
+              <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-blue-900 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-900 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+              </div>
+              <h4 className="text-xl font-black text-slate-800">Financial Reports</h4>
+              <p className="text-slate-400 text-sm mt-2 font-medium">Export CSV data and analyze performance.</p>
+            </div>
+          </Link>
+
           <Link href="/pending-jobs" className="group">
-            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-xl hover:border-amber-200 transition-all cursor-pointer h-full">
+            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-xl transition-all cursor-pointer h-full">
               <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-amber-500 transition-colors">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-amber-600 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-amber-600 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
               </div>
               <h4 className="text-xl font-black text-slate-800">Pending Jobs</h4>
-              <p className="text-slate-400 text-sm mt-2 font-medium">Manage the queue: cancel or delete paid jobs for student refunds.</p>
+              <p className="text-slate-400 text-sm mt-2 font-medium">Manage queue and cancel jobs for student refunds.</p>
             </div>
           </Link>
 
           <Link href="/logs" className="group">
-            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-xl hover:border-red-200 transition-all cursor-pointer h-full">
+            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-xl transition-all cursor-pointer h-full">
               <div className="w-12 h-12 bg-red-50 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-red-600 transition-colors">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-red-600 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                </svg>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-red-600 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
               </div>
               <h4 className="text-xl font-black text-slate-800">Audit Logs</h4>
-              <p className="text-slate-400 text-sm mt-2 font-medium">Monitor real-time staff activity, logins, and transaction history.</p>
-            </div>
-          </Link>
-
-          <Link href="/settings" className="group">
-            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-xl hover:border-yellow-200 transition-all cursor-pointer h-full">
-              <div className="w-12 h-12 bg-yellow-50 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-yellow-500 transition-colors">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-yellow-600 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
-                </svg>
-              </div>
-              <h4 className="text-xl font-black text-slate-800">System Settings</h4>
-              <p className="text-slate-400 text-sm mt-2 font-medium">Configure JAMB prices, service fees, and staff commissions.</p>
+              <p className="text-slate-400 text-sm mt-2 font-medium">Monitor real-time staff activity and transaction history.</p>
             </div>
           </Link>
         </div>
@@ -249,6 +242,51 @@ export default function ManagerDashboard() {
         </div>
 
       </div>
+
+      {/* --- SLIDE-OUT CHAT SYSTEM --- */}
+
+      {/* Toggle Button */}
+      <button 
+        onClick={() => setIsChatOpen(!isChatOpen)}
+        className={`fixed bottom-8 right-8 z-[70] flex items-center justify-center w-16 h-16 rounded-full shadow-2xl transition-all duration-300 ${
+          isChatOpen ? 'bg-red-500 rotate-90' : 'bg-blue-950 hover:scale-110'
+        }`}
+      >
+        {isChatOpen ? (
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>
+        ) : (
+          <div className="relative">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+            <span className="absolute -top-1 -right-1 flex h-4 w-4">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-4 w-4 bg-blue-500 border-2 border-white"></span>
+            </span>
+          </div>
+        )}
+      </button>
+
+      {/* Backdrop */}
+      {isChatOpen && (
+        <div 
+          className="fixed inset-0 bg-blue-950/40 backdrop-blur-sm z-[50] transition-opacity"
+          onClick={() => setIsChatOpen(false)}
+        />
+      )}
+
+      {/* Sidebar Drawer */}
+      <aside className={`fixed top-0 right-0 h-full w-full md:w-[450px] bg-white z-[60] shadow-2xl transition-transform duration-500 ease-in-out transform ${
+        isChatOpen ? 'translate-x-0' : 'translate-x-full'
+      }`}>
+        <div className="h-full flex flex-col pt-8">
+          <div className="px-8 flex justify-between items-center mb-6">
+             <h2 className="text-[11px] font-black text-blue-950 uppercase tracking-[0.2em]">Management Comms</h2>
+             <button onClick={() => setIsChatOpen(false)} className="text-[10px] font-black text-slate-300 hover:text-red-500 uppercase tracking-widest">Hide Chat</button>
+          </div>
+          <div className="flex-1 overflow-hidden">
+             <StaffChat currentUser={userProfile} />
+          </div>
+        </div>
+      </aside>
     </div>
   )
 }
