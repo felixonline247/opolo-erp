@@ -128,7 +128,6 @@ export default function ServiceQueue() {
   const completeJob = async (studentId) => {
     if (!confirm("Confirm completion? This will finalize the task and record your commission.")) return
     try {
-      // 1. Fetch student AND explicitly fetch related service data
       const { data: student, error: fetchError } = await supabase
         .from('students')
         .select(`
@@ -145,7 +144,6 @@ export default function ServiceQueue() {
 
       if (fetchError) throw fetchError
 
-      // 2. Safeguard: Check if service data exists before proceeding
       const service = student?.services;
       if (!service) {
         throw new Error("Cannot calculate commission: Service details are missing for this student.");
@@ -156,14 +154,12 @@ export default function ServiceQueue() {
       const inst = Number(student.institution_cost) || 0;
       const netProfit = paid - inst;
 
-      // 3. Commission Logic
       if (service.commission_type === 'percentage') {
         calculatedComm = (netProfit * (Number(service.commission_value) / 100));
       } else {
         calculatedComm = Number(service.commission_value || 0);
       }
 
-      // 4. Update Student Status to Completed
       const { error: updateError } = await supabase
         .from('students')
         .update({ 
@@ -176,7 +172,6 @@ export default function ServiceQueue() {
 
       if (updateError) throw updateError
       
-      // 5. Refresh UI
       checkServiceAccess(); 
       fetchQueueAndStats(userProfile.id)
       alert(`Task Completed! ₦${calculatedComm.toLocaleString()} commission recorded.`)
@@ -198,7 +193,7 @@ export default function ServiceQueue() {
   )
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans p-4 md:p-12 relative overflow-x-hidden">
+    <div className="min-h-screen bg-slate-50 font-sans p-4 md:p-12 relative overflow-x-hidden text-blue-950">
       <div className="max-w-6xl mx-auto">
         
         <header className="flex justify-between items-start mb-8">
@@ -206,11 +201,19 @@ export default function ServiceQueue() {
             <h1 className="text-2xl md:text-4xl font-black text-blue-950 uppercase italic tracking-tighter">Service Station</h1>
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em]">{userProfile.name} • {userProfile.role}</p>
           </div>
-          <button onClick={handleLogout} className="px-6 py-2 border-2 border-red-100 text-red-500 rounded-full text-[10px] font-black uppercase hover:bg-red-500 hover:text-white transition-all">Logout</button>
+          {/* Action Navigation Group */}
+          <div className="flex items-center gap-3">
+            <Link href="/activity-log">
+              <span className="px-5 py-2 border-2 border-blue-950 bg-white text-blue-950 rounded-full text-[10px] font-black uppercase tracking-wider cursor-pointer hover:bg-slate-100 shadow-[2px_2px_0px_0px_rgba(26,54,93,1)] transition-all">
+                📜 Activity Log
+              </span>
+            </Link>
+            <button onClick={handleLogout} className="px-6 py-2 border-2 border-red-100 text-red-500 rounded-full text-[10px] font-black uppercase hover:bg-red-500 hover:text-white transition-all">Logout</button>
+          </div>
         </header>
 
         {/* STATS CARDS */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
             <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Jobs ({filterMode})</p>
             <h2 className="text-4xl font-black text-blue-950 tracking-tighter">{stats.completed}</h2>
@@ -233,6 +236,21 @@ export default function ServiceQueue() {
                 ₦{userProfile.balance.toLocaleString()}
               </h2>
               <div className="mt-6 text-[9px] font-black uppercase tracking-widest opacity-80 group-hover:opacity-100">Top Up →</div>
+            </div>
+          </Link>
+        </div>
+
+        {/* NEO-BRUTALIST QUICK LINK CARD BANNER */}
+        <div className="mb-10">
+          <Link href="/activity-log">
+            <div className="bg-white border-4 border-blue-950 p-6 rounded-[2rem] flex items-center justify-between shadow-[6px_6px_0px_0px_rgba(26,54,93,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[4px_4px_0px_0px_rgba(26,54,93,1)] transition-all cursor-pointer group">
+              <div>
+                <h4 className="text-lg font-black uppercase tracking-tight text-blue-950">Performance History</h4>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Review your completed jobs and filter tasks by specific dates</p>
+              </div>
+              <span className="bg-blue-500 text-white px-5 py-2.5 border-2 border-blue-950 rounded-xl text-xs font-black uppercase tracking-wider shadow-[2px_2px_0px_0px_rgba(26,54,93,1)] group-hover:bg-blue-600 transition-colors">
+                Open Logs →
+              </span>
             </div>
           </Link>
         </div>
