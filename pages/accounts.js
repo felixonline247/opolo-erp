@@ -9,7 +9,7 @@ export default function AccountsDashboard() {
   const [isChatOpen, setIsChatOpen] = useState(false)
   
   // Filtering States
-  const [timeframe, setTimeframe] = useState('today') // today, week, month, custom
+  const [timeframe, setTimeframe] = useState('today') // today, week, month, custom, all
   const [customDates, setCustomDates] = useState({ start: '', end: '' })
   
   const [userProfile, setUserProfile] = useState({ name: '', email: '', id: null, role: '' })
@@ -25,7 +25,6 @@ export default function AccountsDashboard() {
   useEffect(() => {
     const initializePage = async () => {
       await checkAccountAccess()
-      // Initial fetch happens inside checkAccountAccess or after it sets the profile
     }
     initializePage()
   }, [])
@@ -74,12 +73,20 @@ export default function AccountsDashboard() {
 
     if (timeframe === 'today') {
       start.setHours(0, 0, 0, 0)
+      end.setHours(23, 59, 59, 999)
     } else if (timeframe === 'week') {
-      start.setDate(now.getDate() - 7)
+      // Align to start of current calendar week (Sunday)
+      const currentDay = now.getDay()
+      start.setDate(now.getDate() - currentDay)
+      start.setHours(0, 0, 0, 0)
+      end.setHours(23, 59, 59, 999)
     } else if (timeframe === 'month') {
-      start.setMonth(now.getMonth() - 1)
+      // Align to 1st day of the current month
+      start = new Date(now.getFullYear(), now.getMonth(), 1)
+      end.setHours(23, 59, 59, 999)
     } else if (timeframe === 'custom' && customDates.start && customDates.end) {
       start = new Date(customDates.start)
+      start.setHours(0, 0, 0, 0)
       end = new Date(customDates.end)
       end.setHours(23, 59, 59, 999)
     }
@@ -91,7 +98,7 @@ export default function AccountsDashboard() {
       const { data, error } = await supabase
         .from('students')
         .select(`id, full_name, amount_paid, institution_cost, created_at, services (service_name)`)
-        .eq('status', 'Awaiting Payment') // Matches the status from RegistrationForm
+        .eq('status', 'Awaiting Payment') 
         .eq('is_deleted', false)
         .order('created_at', { ascending: true })
 
@@ -109,7 +116,8 @@ export default function AccountsDashboard() {
       let query = supabase
         .from('students')
         .select(`amount_paid, institution_cost, staff_commission, commission_earned, status`)
-        .in('status', ['Awaiting Service', 'Completed'])
+        // FIX: Included 'Started' status so active tasks are not dropped from revenue totals
+        .in('status', ['Awaiting Service', 'Started', 'Completed'])
         .eq('is_deleted', false)
 
       if (start && timeframe !== 'all') {
@@ -117,7 +125,6 @@ export default function AccountsDashboard() {
       }
 
       const { data, error } = await query
-
       if (error) throw error
       
       if (data) {
@@ -126,7 +133,8 @@ export default function AccountsDashboard() {
         data.forEach(item => {
           const valPaid = Number(item.amount_paid || 0)
           const valInst = Number(item.institution_cost || 0)
-          const valComm = Number(item.commission_earned || 0) // Uses the calculated commission
+          const valComm = Number(item.commission_earned || 0) 
+          
           gross += valPaid
           remit += valInst
           profit += (valPaid - valInst)
@@ -188,7 +196,7 @@ export default function AccountsDashboard() {
           
           {/* TIMEFRAME TOGGLE */}
           <div className="flex flex-wrap items-center bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm gap-1">
-            {['today', 'week', 'month', 'custom'].map((t) => (
+            {['today', 'week', 'month', 'all', 'custom'].map((t) => (
               <button
                 key={t}
                 onClick={() => setTimeframe(t)}
@@ -207,7 +215,7 @@ export default function AccountsDashboard() {
           </div>
         </header>
 
-        {/* CUSTOM DATE PICKER - Only shows if 'custom' is selected */}
+        {/* CUSTOM DATE PICKER */}
         {timeframe === 'custom' && (
           <div className="mb-8 flex gap-4 bg-blue-50 p-6 rounded-[2rem] border border-blue-100 animate-in fade-in slide-in-from-top-4">
             <div className="flex flex-col gap-1">
@@ -270,11 +278,11 @@ export default function AccountsDashboard() {
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-4 w-full md:w-auto">
-                   <div className="text-right">
+                    <div className="text-right">
                       <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Due</p>
                       <p className="text-3xl font-black text-blue-950">₦{Number(student.amount_paid).toLocaleString()}</p>
-                   </div>
-                   <div className="flex gap-2 w-full md:w-auto">
+                    </div>
+                    <div className="flex gap-2 w-full md:w-auto">
                     {['Cash', 'Transfer', 'POS'].map(method => (
                       <button
                         key={method}

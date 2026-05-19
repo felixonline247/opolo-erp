@@ -128,6 +128,7 @@ export default function ServiceQueue() {
   const completeJob = async (studentId) => {
     if (!confirm("Confirm completion? This will finalize the task and record your commission.")) return
     try {
+      // Fetch dynamic settings from the linked service table configuration
       const { data: student, error: fetchError } = await supabase
         .from('students')
         .select(`
@@ -146,18 +147,32 @@ export default function ServiceQueue() {
 
       const service = student?.services;
       if (!service) {
-        throw new Error("Cannot calculate commission: Service details are missing for this student.");
+        throw new Error("Cannot calculate commission: Service details are missing for this student mapping.");
       }
       
+      // Explicitly print values to console log for easier administrative diagnostics
+      console.log("Fetched Service Configuration:", {
+        type: service.commission_type,
+        value: service.commission_value,
+        amount_paid: student.amount_paid,
+        institution_cost: student.institution_cost
+      });
+
       let calculatedComm = 0;
+      // Defensive wrap inside Number() to avoid JavaScript string manipulations
       const paid = Number(student.amount_paid) || 0;
       const inst = Number(student.institution_cost) || 0;
       const netProfit = paid - inst;
 
-      if (service.commission_type === 'percentage') {
-        calculatedComm = (netProfit * (Number(service.commission_value) / 100));
+      // Normalizing string matching to be case-insensitive ('Percentage' vs 'percentage')
+      const commissionTypeNormalized = service.commission_type?.trim().toLowerCase();
+      const rawCommissionValue = Number(service.commission_value) || 0;
+
+      if (commissionTypeNormalized === 'percentage') {
+        calculatedComm = netProfit * (rawCommissionValue / 100);
       } else {
-        calculatedComm = Number(service.commission_value || 0);
+        // Correctly pulls dynamic configuration directly instead of hardcoding 350
+        calculatedComm = rawCommissionValue;
       }
 
       const { error: updateError } = await supabase

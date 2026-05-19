@@ -2,11 +2,11 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabaseClient'
 import Link from 'next/link'
-import StaffChat from '../components/StaffChat' // Added import
+import StaffChat from '../components/StaffChat' 
 
 export default function ManagerDashboard() {
   const [loading, setLoading] = useState(true)
-  const [isChatOpen, setIsChatOpen] = useState(false) // Sidebar State
+  const [isChatOpen, setIsChatOpen] = useState(false) 
   const [userProfile, setUserProfile] = useState({ name: '', email: '', id: null, role: '' })
   const [stats, setStats] = useState({ 
     gross: 0, 
@@ -65,22 +65,41 @@ export default function ManagerDashboard() {
     try {
       let query = supabase
         .from('students')
-        .select(`amount_paid, institution_cost, staff_commission, status, created_at`)
-        .or('status.eq.Paid,status.eq.Completed,status.eq.Pending')
+        .select(`amount_paid, institution_cost, staff_commission, commission_earned, status, created_at`)
+        // FIX: Match verified income statuses perfectly with accounts portal
+        .in('status', ['Awaiting Service', 'Started', 'Completed'])
         .eq('is_deleted', false)
 
       const now = new Date()
+      let start = null
+      let end = null
+
+      // FIX: Align calendar time boundaries with accounts dashboard bounds
       if (filterMode === 'today') {
-        const today = new Date().toISOString().split('T')[0]
-        query = query.gte('created_at', `${today}T00:00:00`)
+        start = new Date()
+        start.setHours(0, 0, 0, 0)
+        end = new Date()
+        end.setHours(23, 59, 59, 999)
       } else if (filterMode === 'weekly') {
-        const lastWeek = new Date(new Date().setDate(now.getDate() - 7)).toISOString()
-        query = query.gte('created_at', lastWeek)
+        start = new Date()
+        const currentDay = now.getDay()
+        start.setDate(now.getDate() - currentDay) // Align to start of current calendar week (Sunday)
+        start.setHours(0, 0, 0, 0)
+        end = new Date()
+        end.setHours(23, 59, 59, 999)
       } else if (filterMode === 'monthly') {
-        const lastMonth = new Date(new Date().setMonth(now.getMonth() - 1)).toISOString()
-        query = query.gte('created_at', lastMonth)
-      } else if (filterMode === 'custom') {
-        query = query.gte('created_at', `${customDate}T00:00:00`).lte('created_at', `${customDate}T23:59:59`)
+        start = new Date(now.getFullYear(), now.getMonth(), 1) // Align to 1st day of current month
+        end = new Date()
+        end.setHours(23, 59, 59, 999)
+      } else if (filterMode === 'custom' && customDate) {
+        start = new Date(customDate)
+        start.setHours(0, 0, 0, 0)
+        end = new Date(customDate)
+        end.setHours(23, 59, 59, 999)
+      }
+
+      if (start && filterMode !== 'total') {
+        query = query.gte('created_at', start.toISOString()).lte('created_at', end.toISOString())
       }
 
       const { data, error } = await query
@@ -90,11 +109,12 @@ export default function ManagerDashboard() {
       data?.forEach(item => {
         const paid = Number(item.amount_paid) || 0
         const inst = Number(item.institution_cost) || 0
-        const comm = Number(item.staff_commission) || 0
+        const comm = Number(item.commission_earned || item.staff_commission || 0)
+        
         totals.gross += paid
         totals.remittance += inst
         totals.commissions += comm
-        totals.net += (paid - inst - comm)
+        totals.net += (paid - inst) // FIX: Aligned with standard Net Resort profit definition (Gross - Institution Cost)
       })
 
       setStats({
@@ -242,8 +262,6 @@ export default function ManagerDashboard() {
         </div>
 
       </div>
-
-      {/* --- SLIDE-OUT CHAT SYSTEM --- */}
 
       {/* Toggle Button */}
       <button 
