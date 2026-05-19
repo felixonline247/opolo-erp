@@ -11,7 +11,8 @@ export default function Dashboard() {
   const [services, setServices] = useState([])
   const [userRole, setUserRole] = useState(null)
   const [userEmail, setUserEmail] = useState(null)
-  const [userProfile, setUserProfile] = useState({ id: null, name: '', email: '' })
+  // UPDATED: Holds live database custom fee configurations 
+  const [userProfile, setUserProfile] = useState({ id: null, name: '', email: '', commission_type: 'fixed', commission_value: 0 })
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [filterDate, setFilterDate] = useState('today')
@@ -28,9 +29,10 @@ export default function Dashboard() {
       
       setUserEmail(session.user.email)
       
+      // UPDATED: Now fetches custom commission rules linked directly to this personnel's profile row
       const { data: profile } = await supabase
         .from('profiles')
-        .select('id, full_name, role, email')
+        .select('id, full_name, role, email, commission_type, commission_value')
         .eq('id', session.user.id)
         .single()
       
@@ -39,7 +41,9 @@ export default function Dashboard() {
       setUserProfile({
         id: session.user.id,
         name: profile?.full_name || 'Staff Member',
-        email: profile?.email || session.user.email
+        email: profile?.email || session.user.email,
+        commission_type: profile?.commission_type || 'fixed',
+        commission_value: Number(profile?.commission_value || 0)
       })
       fetchData(role)
     }
@@ -53,7 +57,7 @@ export default function Dashboard() {
     const { data: srv } = await supabase.from('services').select('*')
     setServices(srv || [])
 
-    // Base query
+    // UPDATED: Pulling assigned_consultant_id mapping parameters
     let query = supabase.from('students').select(`
       *, 
       services(service_name, price, commission_type, commission_value)
@@ -81,7 +85,6 @@ export default function Dashboard() {
   // --- ACTIONS ---
 
   const handleConfirmPayment = async (student, method) => {
-    // This moves the student to the Service Staff's queue
     const { error } = await supabase
       .from('students')
       .update({ 
@@ -99,12 +102,48 @@ export default function Dashboard() {
   }
 
   const handleMarkDone = async (student) => {
-    const svc = student.services;
-    let commission = 0;
-    if (svc?.commission_type === 'fixed') {
-      commission = svc.commission_value;
-    } else if (svc?.commission_type === 'percentage') {
-      commission = (svc.price * svc.commission_value) / 100;
+    const paid = Number(student.amount_paid) || 0;
+    const inst = Number(student.institution_cost) || 0;
+    const netProfit = paid - inst;
+
+    let calculatedComm = 0;
+    let consultantComm = 0;
+
+    // UPDATED: Pull the staff commission structure dynamically from userProfile state
+    if (student.assigned_consultant_id) {
+      // VIP Flow Path: Process assigned staff baseline payout dynamically
+      const staffType = userProfile.commission_type?.toLowerCase();
+      const staffVal = Number(userProfile.commission_value) || 0;
+
+      if (staffType === 'percentage') {
+        calculatedComm = netProfit * (staffVal / 100);
+      } else {
+        calculatedComm = staffVal;
+      }
+
+      // Load specific Consultant target rules live
+      const { data: consultantProfile } = await supabase
+        .from('profiles')
+        .select('commission_type, commission_value')
+        .eq('id', student.assigned_consultant_id)
+        .single();
+
+      if (consultantProfile) {
+        const consulType = consultantProfile.commission_type?.toLowerCase();
+        const consulVal = Number(consultantProfile.commission_value) || 0;
+        consultantComm = consulType === 'percentage' ? (netProfit * (consulVal / 100)) : consulVal;
+      }
+    } else {
+      // Standard Flow Path: Use active staff profile settings dynamically
+      const staffType = userProfile.commission_type?.toLowerCase();
+      const staffVal = Number(userProfile.commission_value) || 0;
+
+      if (staffType === 'percentage') {
+        calculatedComm = netProfit * (staffVal / 100);
+      } else {
+        calculatedComm = staffVal;
+      }
+      consultantComm = 0;
     }
 
     const { error } = await supabase
@@ -112,13 +151,15 @@ export default function Dashboard() {
       .update({ 
         status: 'Completed', 
         service_staff_email: userEmail,
-        commission_earned: commission,
+        staff_commission: calculatedComm, // Dynamic standard metric entry row
+        consultant_commission: consultantComm, // Dynamic VIP metric entry row
+        commission_earned: calculatedComm, // Legacy backward compatibility fallback mapping
         completed_at: new Date().toISOString()
       })
       .eq('id', student.id)
     
     if (!error) {
-      await logActivity("Service", `Completed service for ${student.full_name}. Commission: ₦${commission}`);
+      await logActivity("Service", `Completed service for ${student.full_name}. Staff Commission: ₦${calculatedComm}`);
       fetchData(userRole)
       try { 
         await sendCompletionSMS(student.phone_number, student.full_name); 
@@ -184,7 +225,8 @@ export default function Dashboard() {
           {userRole === 'Service Staff' ? (
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-green-100 bg-green-50/30">
               <p className="text-[10px] text-green-600 font-bold uppercase tracking-widest">Your Commission</p>
-              <p className="text-3xl font-black text-green-700">₦{students.reduce((acc, curr) => acc + (curr.commission_earned || 0), 0).toLocaleString()}</p>
+              {/* UPDATED: Aggregates using database staff_commission tracking parameters natively */}
+              <p className="text-3xl font-black text-green-700">₦{students.reduce((acc, curr) => acc + (curr.staff_commission || curr.commission_earned || 0), 0).toLocaleString()}</p>
             </div>
           ) : (
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
@@ -196,7 +238,7 @@ export default function Dashboard() {
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100 bg-gradient-to-br from-white to-blue-50">
             <p className="text-[10px] text-blue-500 font-bold uppercase tracking-widest">Revenue</p>
             <p className="text-3xl font-black text-blue-900">
-              {['Manager', 'Admin', 'Account'].includes(userRole) ? `₦${students.filter(s => s.status === 'Completed').reduce((acc, curr) => acc + (curr.services?.price || 0), 0).toLocaleString()}` : '••••••'}
+              {['Manager', 'Admin', 'Account'].includes(userRole) ? `₦${students.filter(s => s.status === 'Completed').reduce((acc, curr) => acc + (curr.amount_paid || 0), 0).toLocaleString()}` : '••••••'}
             </p>
           </div>
         </div>
@@ -235,14 +277,19 @@ export default function Dashboard() {
                     {currentItems.length > 0 ? currentItems.map((student) => (
                       <tr key={student.id} className="hover:bg-blue-50/20 transition-colors">
                         <td className="p-5">
-                          <div className="font-black text-slate-800 uppercase text-xs tracking-tight">{student.full_name}</div>
+                          <div className="flex items-center gap-2">
+                            <div className="font-black text-slate-800 uppercase text-xs tracking-tight">{student.full_name}</div>
+                            {student.assigned_consultant_id && (
+                              <span className="bg-purple-100 text-purple-700 text-[8px] font-black uppercase px-2 py-0.5 rounded">VIP</span>
+                            )}
+                          </div>
                           <div className="text-[10px] text-slate-400 font-bold mt-0.5 uppercase">
                             STATUS: <span className={student.status === 'Completed' ? "text-green-600" : "text-blue-600"}>{student.status}</span>
                           </div>
                         </td>
                         <td className="p-5">
                           <div className="text-xs font-bold text-slate-700">{student.services?.service_name || 'General Service'}</div>
-                          <div className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">₦{student.services?.price?.toLocaleString() || '0'} • {student.payment_method || 'Unpaid'}</div>
+                          <div className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">₦{Number(student.amount_paid || student.services?.price || 0).toLocaleString()} • {student.payment_method || 'Unpaid'}</div>
                         </td>
                         <td className="p-5 text-right">
                           {(userRole === 'Account Officer' || userRole === 'Account') && student.status === 'Awaiting Payment' && (
@@ -305,10 +352,7 @@ export default function Dashboard() {
       </button>
 
       {isChatOpen && (
-        <div 
-          className="fixed inset-0 bg-blue-950/40 backdrop-blur-sm z-[50]"
-          onClick={() => setIsChatOpen(false)}
-        />
+        <div className="fixed inset-0 bg-blue-950/40 backdrop-blur-sm z-[50]" onClick={() => setIsChatOpen(false)} />
       )}
 
       <aside className={`fixed top-0 right-0 h-full w-full md:w-[400px] bg-white z-[60] shadow-2xl transition-transform duration-500 ease-in-out transform ${

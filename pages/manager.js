@@ -24,8 +24,10 @@ export default function ManagerDashboard() {
   }, [])
 
   useEffect(() => {
-    fetchGlobalStats()
-  }, [filterMode, customDate])
+    if (userProfile.id) {
+      fetchGlobalStats()
+    }
+  }, [filterMode, customDate, userProfile.id])
 
   const checkAccess = async () => {
     try {
@@ -63,10 +65,10 @@ export default function ManagerDashboard() {
 
   const fetchGlobalStats = async () => {
     try {
+      // UPDATED: Added consultant_commission to track VIP payout rules dynamically
       let query = supabase
         .from('students')
-        .select(`amount_paid, institution_cost, staff_commission, commission_earned, status, created_at`)
-        // FIX: Match verified income statuses perfectly with accounts portal
+        .select(`amount_paid, institution_cost, staff_commission, consultant_commission, commission_earned, status, created_at`)
         .in('status', ['Awaiting Service', 'Started', 'Completed'])
         .eq('is_deleted', false)
 
@@ -74,7 +76,6 @@ export default function ManagerDashboard() {
       let start = null
       let end = null
 
-      // FIX: Align calendar time boundaries with accounts dashboard bounds
       if (filterMode === 'today') {
         start = new Date()
         start.setHours(0, 0, 0, 0)
@@ -83,12 +84,12 @@ export default function ManagerDashboard() {
       } else if (filterMode === 'weekly') {
         start = new Date()
         const currentDay = now.getDay()
-        start.setDate(now.getDate() - currentDay) // Align to start of current calendar week (Sunday)
+        start.setDate(now.getDate() - currentDay) 
         start.setHours(0, 0, 0, 0)
         end = new Date()
         end.setHours(23, 59, 59, 999)
       } else if (filterMode === 'monthly') {
-        start = new Date(now.getFullYear(), now.getMonth(), 1) // Align to 1st day of current month
+        start = new Date(now.getFullYear(), now.getMonth(), 1) 
         end = new Date()
         end.setHours(23, 59, 59, 999)
       } else if (filterMode === 'custom' && customDate) {
@@ -106,15 +107,18 @@ export default function ManagerDashboard() {
       if (error) throw error
 
       let totals = { gross: 0, commissions: 0, remittance: 0, net: 0 }
+      
       data?.forEach(item => {
         const paid = Number(item.amount_paid) || 0
         const inst = Number(item.institution_cost) || 0
-        const comm = Number(item.commission_earned || item.staff_commission || 0)
+        // UPDATED: Aggregates both types of commissions to prevent hardcoded leaks
+        const comm = Number(item.commission_earned || item.staff_commission || 0) + Number(item.consultant_commission || 0)
         
         totals.gross += paid
         totals.remittance += inst
         totals.commissions += comm
-        totals.net += (paid - inst) // FIX: Aligned with standard Net Resort profit definition (Gross - Institution Cost)
+        // UPDATED: Deducts both costs and payouts for clean true metrics matching the accountant interface
+        totals.net += (paid - inst - comm) 
       })
 
       setStats({
@@ -207,7 +211,7 @@ export default function ManagerDashboard() {
           <Link href="/manager-wallets" className="group">
             <div className="bg-blue-900 p-8 rounded-[2.5rem] border border-blue-800 shadow-sm hover:shadow-xl hover:scale-[1.02] transition-all cursor-pointer h-full">
               <div className="w-12 h-12 bg-blue-800 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-white transition-colors">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white group-hover:text-blue-900" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white group-hover:text-blue-900" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 00-2 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
               </div>
               <h4 className="text-xl font-black text-white">Wallet Control</h4>
               <p className="text-blue-200 text-sm mt-2 font-medium">Add daily float cash to staff and reset balances.</p>

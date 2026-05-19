@@ -7,6 +7,7 @@ export default function Settings() {
   const [services, setServices] = useState([])
   const [staff, setStaff] = useState([])
   const [editingId, setEditingId] = useState(null)
+  const [editingStaffId, setEditingStaffId] = useState(null) // NEW: Tracks active staff edit row
   
   // SMS Template State
   const [smsTemplate, setSmsTemplate] = useState('')
@@ -23,7 +24,8 @@ export default function Settings() {
     full_name: '', 
     role: 'Service Staff',
     commission_type: 'fixed',
-    commission_value: 0
+    commission_value: 0,
+    vip_auth_code: '0000'
   })
   
   const [loading, setLoading] = useState(true)
@@ -53,7 +55,7 @@ export default function Settings() {
   }
 
   const fetchStaff = async () => {
-    const { data } = await supabase.from('profiles').select('*').order('role', { ascending: true })
+    const { data } = await supabase.from('profiles').select('id, email, full_name, role, commission_type, commission_value, vip_auth_code').order('role', { ascending: true })
     setStaff(data || [])
   }
 
@@ -79,7 +81,7 @@ export default function Settings() {
     setSavingTemplate(false)
   }
 
-  const handleSubmit = async (e) => {
+  const handleServiceSubmit = async (e) => {
     e.preventDefault()
     const payload = {
       ...formData,
@@ -98,25 +100,45 @@ export default function Settings() {
     fetchServices()
   }
 
-  const handleAddStaff = async (e) => {
+  const handleStaffSubmit = async (e) => {
     e.preventDefault()
-    const { error } = await supabase.from('profiles').insert([
-      { 
-        email: staffData.email.toLowerCase().trim(), 
-        full_name: staffData.full_name, 
-        role: staffData.role,
-        commission_type: staffData.commission_type,
-        commission_value: parseFloat(staffData.commission_value)
-      }
-    ])
+    
+    const payload = { 
+      email: staffData.email.toLowerCase().trim(), 
+      full_name: staffData.full_name, 
+      role: staffData.role,
+      commission_type: staffData.commission_type,
+      commission_value: parseFloat(staffData.commission_value),
+      vip_auth_code: staffData.role === 'Consultant' ? staffData.vip_auth_code.trim() : '0000'
+    }
+
+    let error;
+    // UPDATED: Dynamic routing logic to handle updates if editingStaffId exists
+    if (editingStaffId) {
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update(payload)
+        .eq('id', editingStaffId)
+      error = updateError
+    } else {
+      const { error: insertError } = await supabase
+        .from('profiles')
+        .insert([payload])
+      error = insertError
+    }
 
     if (error) {
-      alert("Registration Error: " + error.message)
+      alert("Staff Configuration Save Error: " + error.message)
     } else {
-      alert("Staff member successfully pre-registered!");
-      setStaffData({ email: '', full_name: '', role: 'Service Staff', commission_type: 'fixed', commission_value: 0 })
+      alert(editingStaffId ? "Staff configuration metrics saved successfully!" : "Staff member successfully pre-registered!");
+      clearStaffForm()
       fetchStaff()
     }
+  }
+
+  const clearStaffForm = () => {
+    setStaffData({ email: '', full_name: '', role: 'Service Staff', commission_type: 'fixed', commission_value: 0, vip_auth_code: '0000' })
+    setEditingStaffId(null)
   }
 
   const deleteService = async (id) => {
@@ -147,12 +169,11 @@ export default function Settings() {
           <Link href="/dashboard" className="text-xs font-black text-slate-400 hover:text-blue-600 uppercase tracking-widest">← Back to Command</Link>
         </div>
 
-        {/* NEW SECTION: BROADCAST & COMMUNICATION */}
+        {/* SECTION: BROADCAST & COMMUNICATION */}
         <div className="mb-20">
           <h3 className="text-[10px] font-black text-blue-900 uppercase tracking-[0.3em] mb-6 ml-2">Communication Center</h3>
           
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {/* Template Editor */}
             <div className="md:col-span-2 bg-amber-50 p-8 rounded-[2rem] border border-amber-100 shadow-sm">
               <h2 className="text-xs font-black text-amber-600 uppercase mb-4">Global SMS Alert Template</h2>
               <textarea 
@@ -176,7 +197,6 @@ export default function Settings() {
               </div>
             </div>
 
-            {/* Broadcast Link Button */}
             <div className="bg-blue-900 p-8 rounded-[2rem] flex flex-col justify-center items-center text-center shadow-xl shadow-blue-900/20">
               <div className="bg-blue-800 p-4 rounded-full mb-4">
                 <svg className="w-6 h-6 text-blue-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -197,7 +217,7 @@ export default function Settings() {
           <h3 className="text-[10px] font-black text-blue-900 uppercase tracking-[0.3em] mb-6 ml-2">Service & Price Configuration</h3>
           <div className="bg-slate-50 p-8 rounded-[2rem] mb-8 border border-slate-100 shadow-sm">
             <h2 className="text-xs font-black text-slate-400 uppercase mb-6">{editingId ? 'Edit Existing Service' : 'Add New Registration Service'}</h2>
-            <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <form onSubmit={handleServiceSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <input className="p-4 rounded-xl border-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" placeholder="Service Name (e.g., JAMB UTME)" value={formData.service_name} onChange={(e) => setFormData({...formData, service_name: e.target.value})} required />
               <input type="number" className="p-4 rounded-xl border-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" placeholder="Total Price to Student (₦)" value={formData.price} onChange={(e) => setFormData({...formData, price: e.target.value})} required />
               <div className="md:col-span-2">
@@ -231,8 +251,11 @@ export default function Settings() {
         <div className="mb-12">
           <h3 className="text-[10px] font-black text-blue-900 uppercase tracking-[0.3em] mb-6 ml-2">Staff & User Permissions</h3>
           <div className="bg-blue-950 p-8 rounded-[2rem] mb-8 shadow-xl shadow-blue-900/20">
-            <h2 className="text-xs font-black text-blue-300 uppercase mb-6">Register New Personnel with Commission</h2>
-            <form onSubmit={handleAddStaff} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* UPDATED HEADER: Changes depending on editing state */}
+            <h2 className="text-xs font-black text-blue-300 uppercase mb-6">
+              {editingStaffId ? `Edit Personnel Settings: ${staffData.full_name}` : 'Register New Personnel with Commission'}
+            </h2>
+            <form onSubmit={handleStaffSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <input className="p-4 rounded-xl border-none outline-none text-sm font-bold bg-blue-900 text-white placeholder-blue-400" placeholder="Full Name" value={staffData.full_name} onChange={(e) => setStaffData({...staffData, full_name: e.target.value})} required />
               <input type="email" className="p-4 rounded-xl border-none outline-none text-sm font-bold bg-blue-900 text-white placeholder-blue-400" placeholder="Staff Email Address" value={staffData.email} onChange={(e) => setStaffData({...staffData, email: e.target.value})} required />
               
@@ -249,34 +272,91 @@ export default function Settings() {
                 <input type="number" className="bg-transparent border-none outline-none text-sm font-bold text-white placeholder-blue-400 w-full" placeholder="Value (e.g. 500 or 10)" value={staffData.commission_value} onChange={(e) => setStaffData({...staffData, commission_value: e.target.value})} required />
               </div>
 
-              <select className="p-4 rounded-xl border-none outline-none text-sm font-bold bg-blue-900 text-white md:col-span-1" value={staffData.role} onChange={(e) => setStaffData({...staffData, role: e.target.value})}>
-                <option value="Front Desk">Front Desk</option>
-                <option value="Service Staff">Service Staff</option>
-                <option value="Account">Account Officer</option>
-                <option value="Manager">Manager</option>
-              </select>
+              <div className="flex flex-col gap-1 md:col-span-1">
+                <select className="w-full p-4 rounded-xl border-none outline-none text-sm font-bold bg-blue-900 text-white" value={staffData.role} onChange={(e) => setStaffData({...staffData, role: e.target.value})}>
+                  <option value="Front Desk">Front Desk</option>
+                  <option value="Service Staff">Service Staff</option>
+                  <option value="Account">Account Officer</option>
+                  <option value="Consultant">Consultant (VIP)</option>
+                  <option value="Manager">Manager</option>
+                </select>
+              </div>
 
-              <button type="submit" className="bg-blue-500 text-white p-4 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-white hover:text-blue-950 transition">Register Staff</button>
+              {staffData.role === 'Consultant' && (
+                <div className="bg-purple-900 p-4 rounded-xl flex flex-col gap-2 md:col-span-1 border border-purple-400 animate-in slide-in-from-top-2 duration-200">
+                  <label className="text-[8px] font-black text-purple-200 uppercase tracking-wider">Consultant Authorization PIN</label>
+                  <input 
+                    type="text" 
+                    maxLength="6"
+                    className="bg-transparent border-none outline-none text-sm font-black text-white placeholder-purple-400 w-full tracking-widest" 
+                    placeholder="Enter PIN (e.g. 1234)" 
+                    value={staffData.vip_auth_code} 
+                    onChange={(e) => setStaffData({...staffData, vip_auth_code: e.target.value})} 
+                    required={staffData.role === 'Consultant'} 
+                  />
+                </div>
+              )}
+
+              {/* UPDATED BUTTON ACTIONS: Handles changes cleanly */}
+              <div className="md:col-span-2 flex gap-2 mt-2">
+                <button type="submit" className="flex-1 bg-blue-500 text-white p-4 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-white hover:text-blue-950 transition">
+                  {editingStaffId ? 'Save Personnel Changes' : 'Register Staff'}
+                </button>
+                {editingStaffId && (
+                  <button type="button" onClick={clearStaffForm} className="bg-blue-900 border border-blue-400 text-blue-200 px-6 rounded-xl font-black text-xs uppercase hover:bg-red-500 hover:text-white transition-all">
+                    Cancel
+                  </button>
+                )}
+              </div>
             </form>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {staff.map((member, idx) => (
-              /* Safe Key Fallback */
               <div key={member.id || `staff-${idx}`} className="p-6 bg-slate-50 border border-slate-100 rounded-2xl flex justify-between items-center">
                 <div className="overflow-hidden">
                   <p className="font-black text-blue-950 uppercase text-xs truncate">{member.full_name || 'Awaiting Signup'}</p>
                   <p className="text-[10px] text-slate-400 font-bold uppercase mb-2">{member.email}</p>
-                  <div className="flex gap-2 items-center">
-                    <span className={`text-[8px] font-black px-2 py-1 rounded-md uppercase tracking-widest ${member.role === 'Manager' ? 'bg-blue-900 text-white' : 'bg-slate-200 text-slate-600'}`}>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <span className={`text-[8px] font-black px-2 py-1 rounded-md uppercase tracking-widest ${member.role === 'Manager' ? 'bg-blue-900 text-white' : member.role === 'Consultant' ? 'bg-purple-900 text-white' : 'bg-slate-200 text-slate-600'}`}>
                       {member.role}
                     </span>
                     <span className="text-[8px] font-black text-blue-600 uppercase">
                       {member.commission_type === 'percentage' ? `${member.commission_value}%` : `₦${member.commission_value?.toLocaleString()}`} Comm.
                     </span>
+                    
+                    {member.role === 'Consultant' && (
+                      <span className="text-[8px] font-black bg-purple-100 text-purple-700 px-2 py-1 rounded-md uppercase tracking-wider border border-purple-200">
+                        🔑 PIN: {member.vip_auth_code || '0000'}
+                      </span>
+                    )}
                   </div>
                 </div>
-                <button onClick={() => removeStaff(member.email)} className="text-[10px] font-black text-red-400 hover:text-red-600 uppercase p-2">Remove</button>
+                
+                {/* UPDATED LAYOUT CARD LINKS: Pulls profile object parameters back up to layout forms */}
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button 
+                    onClick={() => {
+                      setEditingStaffId(member.id);
+                      setStaffData({
+                        email: member.email,
+                        full_name: member.full_name || '',
+                        role: member.role || 'Service Staff',
+                        commission_type: member.commission_type || 'fixed',
+                        commission_value: member.commission_value || 0,
+                        vip_auth_code: member.vip_auth_code || '0000'
+                      });
+                    }}
+                    className="text-[10px] font-black text-blue-600 uppercase hover:underline p-1"
+                  >
+                    Edit
+                  </button>
+                  <span className="text-slate-300 text-xs font-black">|</span>
+                  <button onClick={() => removeStaff(member.email)} className="text-[10px] font-black text-red-400 hover:text-red-600 uppercase p-1">
+                    Remove
+                  </button>
+                </div>
+
               </div>
             ))}
           </div>

@@ -7,14 +7,37 @@ export default function RegistrationForm({ services, onSelect }) {
   const [searchResults, setSearchResults] = useState([]);
   const [isExistingStudent, setIsExistingStudent] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState(null);
+  const [consultants, setConsultants] = useState([]); // Tracks active database consultants
+  const [isVipRoute, setIsVipRoute] = useState(false); // Checkbox toggle state
   
   const [formData, setFormData] = useState({ 
     name: '', 
     phone: '', 
     jambCode: '', 
     regNumber: '',
-    service_id: '' 
+    service_id: '',
+    assigned_consultant_id: '' // Tracks chosen consultant profile ID
   });
+
+  // Fetch active consultants on initial component mount
+  useEffect(() => {
+    const fetchActiveConsultants = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('id, full_name')
+          .eq('role', 'Consultant')
+          .order('full_name', { ascending: true });
+
+        if (!error && data) {
+          setConsultants(data);
+        }
+      } catch (err) {
+        console.error("Error loading consultants framework:", err);
+      }
+    };
+    fetchActiveConsultants();
+  }, []);
 
   const handleSearch = async (query) => {
     setFormData({ ...formData, name: query });
@@ -39,16 +62,18 @@ export default function RegistrationForm({ services, onSelect }) {
       phone: student.phone_number,
       jambCode: student.jamb_profile_code || '',
       regNumber: student.reg_number || '',
-      service_id: formData.service_id 
+      service_id: formData.service_id,
+      assigned_consultant_id: formData.assigned_consultant_id
     });
     setSelectedStudentId(student.id);
     setIsExistingStudent(true);
-    setSearchResults([]);
+    searchResults([]);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.service_id) return alert("Please select a service.");
+    if (isVipRoute && !formData.assigned_consultant_id) return alert("Please choose an assigned consultant for this VIP Student.");
     setLoading(true);
 
     try {
@@ -56,21 +81,20 @@ export default function RegistrationForm({ services, onSelect }) {
       const totalCost = Number(selectedService?.price || 0); 
       const instCost = Number(selectedService?.institution_cost || 0);
 
-      // PAYLOAD: We remove 'id' entirely because we want a NEW row every time
       const studentPayload = {
         full_name: formData.name, 
         phone_number: formData.phone, 
         jamb_profile_code: formData.jambCode,
         reg_number: formData.regNumber,
         service_id: formData.service_id,
-        status: 'Awaiting Payment', // Changed from Pending to match Dashboard filter
+        status: 'Awaiting Payment',
         amount_paid: totalCost,
         institution_cost: instCost,
+        assigned_consultant_id: isVipRoute ? formData.assigned_consultant_id : null, // Locks consultant relation to student
         is_deleted: false,
         created_at: new Date()
       };
 
-      // USE .insert() instead of .upsert()
       const { data: studentRecord, error: studentError } = await supabase
         .from('students')
         .insert([studentPayload])
@@ -79,14 +103,19 @@ export default function RegistrationForm({ services, onSelect }) {
       
       if (studentError) throw studentError;
       
-      await logActivity("Registration", `New Service Request: ${formData.name} for ${selectedService?.service_name}`);
-      alert("Success! Request sent to Account Office.");
+      const logMessage = isVipRoute 
+        ? `New VIP Service Request: ${formData.name} assigned to Consultant ID: ${formData.assigned_consultant_id}`
+        : `New Service Request: ${formData.name} for ${selectedService?.service_name}`;
+
+      await logActivity("Registration", logMessage);
+      alert(isVipRoute ? "VIP Request sent! Overridable price workflow routed to Accountant inbox." : "Success! Request sent to Account Office.");
       
-      // Reset Form
-      setFormData({ name: '', phone: '', jambCode: '', regNumber: '', service_id: '' });
+      // Reset Form State
+      setFormData({ name: '', phone: '', jambCode: '', regNumber: '', service_id: '', assigned_consultant_id: '' });
       setIsExistingStudent(false);
+      setIsVipRoute(false);
       setSelectedStudentId(null);
-      if (onSelect) onSelect(); // Refresh dashboard list
+      if (onSelect) onSelect(); 
 
     } catch (error) {
       console.error("Submission Error:", error);
@@ -114,6 +143,43 @@ export default function RegistrationForm({ services, onSelect }) {
               <option key={svc.id} value={svc.id}>{svc.service_name} (₦{svc.price?.toLocaleString()})</option>
             ))}
           </select>
+        </div>
+
+        {/* VIP ROUTE ASSIGNMENT TOGGLE LAYER */}
+        <div className="bg-slate-50 p-4 border border-slate-200 rounded-2xl flex flex-col gap-3">
+          <div className="flex items-center gap-3">
+            <input 
+              type="checkbox" 
+              id="vipToggle"
+              checked={isVipRoute}
+              onChange={(e) => {
+                setIsVipRoute(e.target.checked);
+                if(!e.target.checked) setFormData({...formData, assigned_consultant_id: ''});
+              }}
+              className="w-4 h-4 text-purple-600 bg-gray-100 border-gray-300 rounded focus:ring-purple-500"
+            />
+            <label htmlFor="vipToggle" className="text-xs font-black uppercase text-purple-700 tracking-wide cursor-pointer select-none">
+              Assign to a Consultant (VIP Student Route)
+            </label>
+          </div>
+
+          {/* DYNAMIC CONTEXTUAL DROP-DOWN LIST */}
+          {isVipRoute && (
+            <div className="animate-in fade-in slide-in-from-top-2 duration-200">
+              <label className="block text-[10px] font-black text-purple-600 uppercase tracking-widest mb-1 ml-1">Choose Assigned Consultant</label>
+              <select
+                required={isVipRoute}
+                className="w-full px-4 py-3 bg-purple-50 border border-purple-200 rounded-xl focus:ring-2 focus:ring-purple-500 outline-none text-sm font-bold text-purple-900"
+                value={formData.assigned_consultant_id}
+                onChange={(e) => setFormData({...formData, assigned_consultant_id: e.target.value})}
+              >
+                <option value="">-- Select Consultant Name --</option>
+                {consultants.map(c => (
+                  <option key={c.id} value={c.id}>{c.full_name}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         <div className="relative">

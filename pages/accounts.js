@@ -14,6 +14,7 @@ export default function AccountsDashboard() {
   
   const [userProfile, setUserProfile] = useState({ name: '', email: '', id: null, role: '' })
   const [pendingStudents, setPendingStudents] = useState([])
+  const [customPrices, setCustomPrices] = useState({}) // NEW: Tracks overridden VIP prices
   const [stats, setStats] = useState({ 
     totalGross: 0,    
     netProfit: 0,     
@@ -75,13 +76,11 @@ export default function AccountsDashboard() {
       start.setHours(0, 0, 0, 0)
       end.setHours(23, 59, 59, 999)
     } else if (timeframe === 'week') {
-      // Align to start of current calendar week (Sunday)
       const currentDay = now.getDay()
       start.setDate(now.getDate() - currentDay)
       start.setHours(0, 0, 0, 0)
       end.setHours(23, 59, 59, 999)
     } else if (timeframe === 'month') {
-      // Align to 1st day of the current month
       start = new Date(now.getFullYear(), now.getMonth(), 1)
       end.setHours(23, 59, 59, 999)
     } else if (timeframe === 'custom' && customDates.start && customDates.end) {
@@ -95,9 +94,19 @@ export default function AccountsDashboard() {
 
   const fetchPendingData = async () => {
     try {
+      // NEW: Included assigned_consultant_id and joining the consultant's profile name
       const { data, error } = await supabase
         .from('students')
-        .select(`id, full_name, amount_paid, institution_cost, created_at, services (service_name)`)
+        .select(`
+          id, 
+          full_name, 
+          amount_paid, 
+          institution_cost, 
+          created_at, 
+          assigned_consultant_id,
+          consultant:profiles!students_assigned_consultant_id_fkey(full_name),
+          services (service_name)
+        `)
         .eq('status', 'Awaiting Payment') 
         .eq('is_deleted', false)
         .order('created_at', { ascending: true })
@@ -115,8 +124,7 @@ export default function AccountsDashboard() {
     try {
       let query = supabase
         .from('students')
-        .select(`amount_paid, institution_cost, staff_commission, commission_earned, status`)
-        // FIX: Included 'Started' status so active tasks are not dropped from revenue totals
+        .select(`amount_paid, institution_cost, staff_commission, consultant_commission, commission_earned, status`)
         .in('status', ['Awaiting Service', 'Started', 'Completed'])
         .eq('is_deleted', false)
 
@@ -133,11 +141,12 @@ export default function AccountsDashboard() {
         data.forEach(item => {
           const valPaid = Number(item.amount_paid || 0)
           const valInst = Number(item.institution_cost || 0)
-          const valComm = Number(item.commission_earned || 0) 
+          // Sums up standard commissions AND consultant commissions
+          const valComm = Number(item.commission_earned || item.staff_commission || 0) + Number(item.consultant_commission || 0) 
           
           gross += valPaid
           remit += valInst
-          profit += (valPaid - valInst)
+          profit += (valPaid - valInst - valComm) // True Net Profit calculation
           comms += valComm
         })
 
@@ -148,9 +157,19 @@ export default function AccountsDashboard() {
     }
   }
 
+  // Handle on-the-fly price edits for VIPs
+  const handlePriceEdit = (id, newPrice) => {
+    setCustomPrices(prev => ({ ...prev, [id]: newPrice }))
+  }
+
   const confirmPayment = async (studentId, method) => {
     if (isProcessing) return;
-    const isConfirmed = window.confirm(`Confirm ${method} payment?`);
+    
+    // Check if the accountant set a custom VIP price, otherwise use default
+    const student = pendingStudents.find(s => s.id === studentId);
+    const finalAmount = customPrices[studentId] !== undefined ? Number(customPrices[studentId]) : Number(student.amount_paid);
+
+    const isConfirmed = window.confirm(`Confirm ${method} payment of ₦${finalAmount.toLocaleString()}?`);
     if (!isConfirmed) return;
 
     setIsProcessing(true);
@@ -160,6 +179,7 @@ export default function AccountsDashboard() {
         .update({ 
           status: 'Awaiting Service', 
           payment_method: method,
+          amount_paid: finalAmount, // Overrides the price in the DB
           account_officer_email: userProfile.email,
           payment_confirmed_at: new Date().toISOString() 
         })
@@ -168,6 +188,7 @@ export default function AccountsDashboard() {
       if (error) throw error
       
       setPendingStudents(prev => prev.filter(s => s.id !== studentId))
+      setCustomPrices(prev => { const next = {...prev}; delete next[studentId]; return next; })
       await fetchFinanceStats()
       
     } catch (err) {
@@ -270,18 +291,45 @@ export default function AccountsDashboard() {
           <div className="divide-y divide-slate-100">
             {pendingStudents.map(student => (
               <div key={student.id} className="p-10 flex flex-col md:flex-row justify-between items-center gap-8 hover:bg-slate-50/80 transition-all">
+                
+                {/* Left Side: Info */}
                 <div className="flex-1">
-                  <p className="font-black text-blue-950 uppercase text-2xl tracking-tighter">{student.full_name}</p>
+                  <div className="flex items-center gap-3">
+                    <p className="font-black text-blue-950 uppercase text-2xl tracking-tighter">{student.full_name}</p>
+                    {/* VIP BADGE */}
+                    {student.assigned_consultant_id && (
+                      <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest shadow-sm">
+                        ⭐ VIP: {student.consultant?.full_name}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-3 mt-2">
                     <span className="bg-blue-100 text-blue-600 text-[9px] font-black px-3 py-1 rounded-full uppercase">{student.services?.service_name}</span>
                     <span className="text-[9px] font-bold text-slate-300 uppercase">Received: {new Date(student.created_at).toLocaleTimeString()}</span>
                   </div>
                 </div>
+
+                {/* Right Side: Actions & Pricing */}
                 <div className="flex flex-col items-end gap-4 w-full md:w-auto">
-                    <div className="text-right">
+                    <div className="text-right flex flex-col items-end">
                       <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Due</p>
-                      <p className="text-3xl font-black text-blue-950">₦{Number(student.amount_paid).toLocaleString()}</p>
+                      
+                      {/* VIP CUSTOM PRICING INPUT */}
+                      {student.assigned_consultant_id ? (
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-purple-900 font-black">₦</span>
+                          <input 
+                            type="number" 
+                            value={customPrices[student.id] !== undefined ? customPrices[student.id] : student.amount_paid}
+                            onChange={(e) => handlePriceEdit(student.id, e.target.value)}
+                            className="bg-purple-50 border-2 border-purple-200 text-purple-950 font-black text-2xl w-40 pl-8 pr-4 py-2 rounded-2xl focus:outline-none focus:border-purple-500 focus:ring-4 ring-purple-100 transition-all"
+                          />
+                        </div>
+                      ) : (
+                        <p className="text-3xl font-black text-blue-950">₦{Number(student.amount_paid).toLocaleString()}</p>
+                      )}
                     </div>
+                    
                     <div className="flex gap-2 w-full md:w-auto">
                     {['Cash', 'Transfer', 'POS'].map(method => (
                       <button

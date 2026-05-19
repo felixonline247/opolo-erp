@@ -7,7 +7,7 @@ import StaffChat from '../components/StaffChat'
 export default function ServiceQueue() {
   const [loading, setLoading] = useState(true)
   const [isChatOpen, setIsChatOpen] = useState(false) 
-  const [userProfile, setUserProfile] = useState({ name: '', email: '', id: null, role: '', balance: 0 })
+  const [userProfile, setUserProfile] = useState({ name: '', email: '', id: null, role: '', balance: 0, commission_type: 'fixed', commission_value: 0 })
   const [pendingQueue, setPendingQueue] = useState([]) 
   const [activeJobs, setActiveJobs] = useState([])     
   const [supervisorView, setSupervisorView] = useState([]) 
@@ -35,13 +35,13 @@ export default function ServiceQueue() {
       
       const { data: profile, error } = await supabase
         .from('profiles')
-        .select('id, full_name, email, role, current_wallet_balance')
+        .select('id, full_name, email, role, current_wallet_balance, commission_type, commission_value')
         .eq('id', session.user.id)
         .single()
 
       if (error) throw error
 
-      const allowedRoles = ['Staff', 'Service Staff', 'Manager', 'Admin', 'Account'];
+      const allowedRoles = ['Staff', 'Service Staff', 'Manager', 'Admin', 'Account', 'Consultant'];
       if (!allowedRoles.includes(profile?.role)) {
         router.push('/dashboard')
       } else {
@@ -50,7 +50,9 @@ export default function ServiceQueue() {
           email: profile.email || session.user.email, 
           id: profile.id,
           role: profile.role,
-          balance: profile.current_wallet_balance || 0 
+          balance: profile.current_wallet_balance || 0,
+          commission_type: profile.commission_type || 'fixed',
+          commission_value: Number(profile.commission_value || 0)
         })
         setLoading(false)
       }
@@ -64,14 +66,14 @@ export default function ServiceQueue() {
     try {
       const { data: pendingData } = await supabase
         .from('students')
-        .select(`id, full_name, phone_number, status, jamb_profile_code, services(service_name)`)
+        .select(`id, full_name, phone_number, status, jamb_profile_code, assigned_consultant_id, consultant:profiles!students_assigned_consultant_id_fkey(full_name, vip_auth_code), services(service_name)`)
         .in('status', ['Awaiting Service', 'Started'])
         .eq('is_deleted', false)
         .order('payment_confirmed_at', { ascending: true })
 
       const { data: activeData } = await supabase
         .from('students')
-        .select(`id, full_name, phone_number, services(service_name)`)
+        .select(`id, full_name, phone_number, assigned_consultant_id, consultant:profiles!students_assigned_consultant_id_fkey(full_name), services(service_name)`)
         .eq('status', 'Started')
         .eq('started_by', sId)
 
@@ -85,7 +87,7 @@ export default function ServiceQueue() {
 
       let query = supabase
         .from('students')
-        .select('id, staff_commission, completed_at')
+        .select('id, staff_commission, consultant_commission, completed_at')
         .eq('completed_by', sId)
         .eq('status', 'Completed')
         .eq('is_deleted', false)
@@ -98,7 +100,7 @@ export default function ServiceQueue() {
       }
 
       const { data: completedData } = await query
-      let totalComm = completedData?.reduce((acc, job) => acc + Number(job.staff_commission || 0), 0) || 0
+      let totalComm = completedData?.reduce((acc, job) => acc + Number(job.staff_commission || 0) + Number(job.consultant_commission || 0), 0) || 0
 
       setPendingQueue(pendingData || [])
       setActiveJobs(activeData || [])
@@ -110,6 +112,16 @@ export default function ServiceQueue() {
 
   const startJob = async (id) => {
     try {
+      const job = pendingQueue.find(s => s.id === id);
+      
+      if (job.assigned_consultant_id && userProfile.id !== job.assigned_consultant_id) {
+        const enteredPin = window.prompt(`🔒 VIP PROTECTED TASK\nThis student belongs to Consultant: ${job.consultant?.full_name}.\n\nEnter the Authorization PIN to perform this task on their behalf:`);
+        
+        if (enteredPin !== job.consultant?.vip_auth_code) {
+          return alert("❌ Invalid Authorization Code. Access Denied.");
+        }
+      }
+
       const { error } = await supabase
         .from('students')
         .update({ 
@@ -128,67 +140,87 @@ export default function ServiceQueue() {
   const completeJob = async (studentId) => {
     if (!confirm("Confirm completion? This will finalize the task and record your commission.")) return
     try {
-      // Fetch dynamic settings from the linked service table configuration
+      // 1. Fetch student contextual records
       const { data: student, error: fetchError } = await supabase
         .from('students')
         .select(`
           amount_paid, 
           institution_cost, 
           service_id, 
-          services (
-            commission_type, 
-            commission_value
-          )
+          assigned_consultant_id
         `)
         .eq('id', studentId)
         .single()
 
       if (fetchError) throw fetchError
 
-      const service = student?.services;
-      if (!service) {
-        throw new Error("Cannot calculate commission: Service details are missing for this student mapping.");
+      // Secure live authentication snapshot
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Authentication session lost.");
+
+      // 2. FETCH WORKING PERSONNEL CONFIGURATION DIRECTLY FROM DATABASE LAYER
+      const { data: staffProfile, error: staffProfileError } = await supabase
+        .from('profiles')
+        .select('commission_type, commission_value')
+        .eq('id', session.user.id)
+        .single();
+
+      if (staffProfileError || !staffProfile) {
+        throw new Error("Could not retrieve your verified staff profile parameters.");
       }
-      
-      // Explicitly print values to console log for easier administrative diagnostics
-      console.log("Fetched Service Configuration:", {
-        type: service.commission_type,
-        value: service.commission_value,
-        amount_paid: student.amount_paid,
-        institution_cost: student.institution_cost
-      });
 
       let calculatedComm = 0;
-      // Defensive wrap inside Number() to avoid JavaScript string manipulations
+      let consultantComm = 0;
       const paid = Number(student.amount_paid) || 0;
       const inst = Number(student.institution_cost) || 0;
       const netProfit = paid - inst;
 
-      // Normalizing string matching to be case-insensitive ('Percentage' vs 'percentage')
-      const commissionTypeNormalized = service.commission_type?.trim().toLowerCase();
-      const rawCommissionValue = Number(service.commission_value) || 0;
+      // 3. Process normal staff commission matching from the live database snapshot
+      const staffType = staffProfile.commission_type?.toLowerCase();
+      const staffVal = Number(staffProfile.commission_value) || 0;
 
-      if (commissionTypeNormalized === 'percentage') {
-        calculatedComm = netProfit * (rawCommissionValue / 100);
+      if (staffType === 'percentage') {
+        calculatedComm = netProfit * (staffVal / 100);
       } else {
-        // Correctly pulls dynamic configuration directly instead of hardcoding 350
-        calculatedComm = rawCommissionValue;
+        calculatedComm = staffVal; // Your ₦200 configuration reads cleanly here
       }
 
+      // 4. Process Consultant calculation paths if student routing contains mapping parameters
+      if (student.assigned_consultant_id) {
+        const { data: consultantProfile, error: consultantError } = await supabase
+          .from('profiles')
+          .select('commission_type, commission_value')
+          .eq('id', student.assigned_consultant_id)
+          .single();
+
+        if (!consultantError && consultantProfile) {
+          const consulType = consultantProfile.commission_type?.toLowerCase();
+          const consulVal = Number(consultantProfile.commission_value) || 0;
+
+          if (consulType === 'percentage') {
+            consultantComm = netProfit * (consulVal / 100);
+          } else {
+            consultantComm = consulVal;
+          }
+        }
+      }
+
+      // 5. Commit changes to Database row
       const { error: updateError } = await supabase
         .from('students')
         .update({ 
           status: 'Completed',
-          completed_by: userProfile.id,
+          completed_by: session.user.id,
           completed_at: new Date().toISOString(),
-          staff_commission: calculatedComm 
+          staff_commission: calculatedComm,
+          consultant_commission: consultantComm,
+          commission_earned: calculatedComm // backward compatibility fallback
         })
         .eq('id', studentId)
 
       if (updateError) throw updateError
       
-      checkServiceAccess(); 
-      fetchQueueAndStats(userProfile.id)
+      fetchQueueAndStats(session.user.id)
       alert(`Task Completed! ₦${calculatedComm.toLocaleString()} commission recorded.`)
     } catch (err) {
       console.error("Completion Process Error:", err)
@@ -270,18 +302,40 @@ export default function ServiceQueue() {
           </Link>
         </div>
 
+        {/* MONITORING / SUPERVISOR ACTIVE MODULE DISPLAY */}
+        {supervisorView.length > 0 && (
+          <div className="mb-10 p-8 bg-amber-50 border-4 border-amber-500 rounded-[2.5rem] shadow-[4px_4px_0px_0px_rgba(245,158,11,1)] animate-in fade-in-50 duration-300">
+            <h3 className="text-xs font-black uppercase tracking-[0.2em] text-amber-800 mb-4 flex items-center gap-2">⚠️ Management Supervision Inbox</h3>
+            <div className="grid gap-2">
+              {supervisorView.map((job) => (
+                <div key={job.id} className="text-xs font-bold text-amber-950 bg-white/60 p-3 rounded-xl border border-amber-200 flex justify-between items-center">
+                  <span>Student: <strong className="uppercase font-black">{job.full_name}</strong></span>
+                  <span className="bg-amber-500 text-white font-black text-[9px] px-3 py-1 rounded-md uppercase tracking-wider">Processing By: {job.profiles?.full_name || 'System'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* ACTIVE WORKLIST */}
         {activeJobs.length > 0 && (
           <div className="mb-12">
             <h3 className="text-[11px] font-black text-green-600 uppercase mb-4 tracking-[0.2em]">⚡ Active Tasks</h3>
             <div className="grid gap-4">
               {activeJobs.map(job => (
-                <div key={job.id} className="bg-white border-2 border-green-500 p-8 rounded-[3rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-xl">
+                <div key={job.id} className="bg-white border-4 border-green-500 p-8 rounded-[3rem] flex flex-col md:flex-row justify-between items-center gap-6 shadow-xl">
                   <div>
-                    <p className="font-black text-blue-950 text-2xl uppercase tracking-tighter italic">{job.full_name}</p>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <p className="font-black text-blue-950 text-2xl uppercase tracking-tighter italic">{job.full_name}</p>
+                      {job.assigned_consultant_id && (
+                        <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest shadow-sm border border-purple-200">
+                          ⭐ VIP Consultant: {job.consultant?.full_name}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-[10px] font-black text-green-600 uppercase bg-green-50 px-3 py-1 rounded-full inline-block mt-2">{job.services?.service_name}</p>
                   </div>
-                  <button onClick={() => completeJob(job.id)} className="w-full md:w-auto bg-green-500 text-white px-10 py-4 rounded-2xl text-[11px] font-black uppercase hover:bg-green-600 transition-all">Finish Task</button>
+                  <button onClick={() => completeJob(job.id)} className="w-full md:w-auto bg-green-500 text-white px-10 py-4 border-2 border-blue-950 rounded-2xl text-[11px] font-black uppercase hover:bg-green-600 transition-all shadow-[3px_3px_0px_0px_rgba(26,54,93,1)]">Finish Task</button>
                 </div>
               ))}
             </div>
@@ -289,23 +343,32 @@ export default function ServiceQueue() {
         )}
 
         {/* PENDING QUEUE */}
-        <div className="bg-white rounded-[3rem] border border-slate-200 overflow-hidden shadow-sm">
-            <div className="p-8 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-               <h3 className="text-[11px] font-black text-blue-950 uppercase tracking-[0.2em]">Queue ({pendingQueue.length})</h3>
+        <div className="bg-white rounded-[3rem] border-4 border-blue-950 overflow-hidden shadow-[6px_6px_0px_0px_rgba(26,54,93,1)] mb-12">
+            <div className="p-8 border-b-4 border-blue-950 bg-slate-50/50 flex justify-between items-center">
+               <h3 className="text-[11px] font-black text-blue-950 uppercase tracking-[0.2em]">Queue Workflow Ledger ({pendingQueue.length})</h3>
                <span className="w-3 h-3 bg-blue-500 rounded-full animate-ping"></span>
             </div>
-            <div className="divide-y divide-slate-100">
+            <div className="divide-y-2 divide-slate-100">
              {pendingQueue.map((student) => (
                <div key={student.id} className="p-8 flex flex-col md:flex-row justify-between items-center gap-6 hover:bg-blue-50/30 transition-all">
                  <div className="text-center md:text-left">
-                    <p className="font-black text-blue-950 uppercase tracking-tight text-lg">{student.full_name}</p>
+                    <div className="flex flex-wrap items-center gap-3 justify-center md:justify-start">
+                       <p className="font-black text-blue-950 uppercase tracking-tight text-lg">{student.full_name}</p>
+                       {student.assigned_consultant_id && (
+                          <span className="bg-purple-100 text-purple-700 px-3 py-0.5 rounded-md text-[8px] font-black uppercase tracking-widest border border-purple-200">
+                            VIP: {student.consultant?.full_name}
+                          </span>
+                       )}
+                    </div>
                     <p className="text-[10px] font-bold text-slate-400 mt-1 uppercase">{student.services?.service_name}</p>
-                    <p className="text-[9px] font-black text-blue-500 mt-1">STATUS: {student.status}</p>
+                    <p className="text-[9px] font-black text-blue-500 mt-1 uppercase">STATUS MAPPING: {student.status}</p>
                  </div>
                  {student.status === 'Started' ? (
-                     <button disabled className="bg-slate-100 text-slate-400 px-8 py-3 rounded-2xl text-[10px] font-black uppercase cursor-not-allowed">In Progress</button>
+                     <button disabled className="bg-slate-100 text-slate-400 px-8 py-3 border-2 border-slate-200 rounded-2xl text-[10px] font-black uppercase cursor-not-allowed">In Progress</button>
                  ) : (
-                    <button onClick={() => startJob(student.id)} className="bg-white border-2 border-slate-100 text-blue-950 px-8 py-3 rounded-2xl text-[10px] font-black uppercase hover:border-blue-900 transition-all">Start Task</button>
+                    <button onClick={() => startJob(student.id)} className={`${student.assigned_consultant_id ? 'bg-purple-50 border-2 border-purple-200 text-purple-900 hover:bg-purple-900' : 'bg-white border-2 border-slate-100 text-blue-950 hover:border-blue-900'} px-8 py-3 rounded-2xl text-[10px] font-black uppercase hover:text-white transition-all`}>
+                      {student.assigned_consultant_id ? '🔐 Start VIP Task' : 'Start Task'}
+                    </button>
                  )}
                </div>
              ))}
@@ -319,7 +382,7 @@ export default function ServiceQueue() {
       {/* --- SLIDE-OUT CHAT SYSTEM --- */}
       <button 
         onClick={() => setIsChatOpen(!isChatOpen)}
-        className={`fixed bottom-8 right-8 z-[70] flex items-center justify-center w-16 h-16 rounded-full shadow-2xl transition-all duration-300 ${
+        className={`fixed bottom-8 right-8 z-[70] flex items-center justify-center w-16 h-16 rounded-full border-4 border-blue-950 shadow-2xl transition-all duration-300 ${
           isChatOpen ? 'bg-red-500 rotate-90' : 'bg-blue-950 hover:scale-110'
         }`}
       >
@@ -337,10 +400,7 @@ export default function ServiceQueue() {
       </button>
 
       {isChatOpen && (
-        <div 
-          className="fixed inset-0 bg-blue-950/40 backdrop-blur-sm z-[50] transition-opacity"
-          onClick={() => setIsChatOpen(false)}
-        />
+        <div className="fixed inset-0 bg-blue-950/40 backdrop-blur-sm z-[50] transition-opacity" onClick={() => setIsChatOpen(false)} />
       )}
 
       <aside className={`fixed top-0 right-0 h-full w-full md:w-[450px] bg-white z-[60] shadow-2xl transition-transform duration-500 ease-in-out transform ${

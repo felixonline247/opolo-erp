@@ -43,7 +43,7 @@ export default function StaffActivityLog() {
   const fetchJobs = async (userId, dateStr) => {
     setLoading(true);
     try {
-      // Aligned with tables: pulling service_name and student full_name
+      // Added staff_commission to the select query
       let query = supabase
         .from('students')
         .select(`
@@ -52,6 +52,7 @@ export default function StaffActivityLog() {
           status, 
           amount_paid, 
           institution_cost,
+          staff_commission,
           completed_at,
           services (
             id,
@@ -150,6 +151,8 @@ export default function StaffActivityLog() {
                   <tr className="border-b-4 border-blue-950">
                     <th className="pb-4 text-xs font-black uppercase tracking-widest text-blue-950">Student / ID</th>
                     <th className="pb-4 text-xs font-black uppercase tracking-widest text-blue-950">Service Type</th>
+                    <th className="pb-4 text-xs font-black uppercase tracking-widest text-blue-950">Inst. Cost</th>
+                    <th className="pb-4 text-xs font-black uppercase tracking-widest text-blue-950">Commission</th>
                     <th className="pb-4 text-xs font-black uppercase tracking-widest text-blue-950">Date Handled</th>
                     <th className="pb-4 text-xs font-black uppercase tracking-widest text-blue-950">Status</th>
                   </tr>
@@ -168,6 +171,18 @@ export default function StaffActivityLog() {
                       <td className="py-4">
                         <span className="font-black uppercase tracking-tight text-sm text-blue-950 block">
                           {job.services?.service_name || 'Unknown Service'}
+                        </span>
+                      </td>
+                      <td className="py-4">
+                        <span className="font-black text-sm text-red-500 block tracking-tight">
+                          ₦{Number(job.institution_cost || 0).toLocaleString()}
+                        </span>
+                      </td>
+                      <td className="py-4">
+                        <span className="font-black text-sm text-green-600 block tracking-tight">
+                          {job.status === 'Completed' 
+                            ? `₦${Number(job.staff_commission || 0).toLocaleString()}` 
+                            : 'Pending'}
                         </span>
                       </td>
                       <td className="py-4 text-sm font-black uppercase tracking-tight text-slate-500">

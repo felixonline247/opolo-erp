@@ -22,11 +22,11 @@ export default function PendingJobs() {
 
   const fetchPendingJobs = async () => {
     setLoading(true)
-    // UPDATED: Now fetches both Paid (waiting) and Started (active) jobs
+    // FIX: Changed 'Paid' to 'Awaiting Service' to match the actual database workflow
     const { data, error } = await supabase
       .from('students')
       .select('id, full_name, jamb_profile_code, amount_paid, created_at, status')
-      .in('status', ['Paid', 'Started'])
+      .in('status', ['Awaiting Service', 'Started']) 
       .order('created_at', { ascending: false })
 
     if (!error) setJobs(data)
