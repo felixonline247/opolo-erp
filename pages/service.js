@@ -15,6 +15,7 @@ export default function ServiceQueue() {
   
   const [filterMode, setFilterMode] = useState('today') 
   const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0])
+  const [queueSearch, setQueueSearch] = useState('') // NEW: Search keyword state tracking
 
   const router = useRouter()
 
@@ -22,9 +23,25 @@ export default function ServiceQueue() {
     checkServiceAccess()
   }, [])
 
+  // NEW: Setup real-time pipeline to keep queue entries live without refreshing browser
   useEffect(() => {
-    if (userProfile.id) {
-      fetchQueueAndStats(userProfile.id)
+    if (!userProfile.id) return
+
+    fetchQueueAndStats(userProfile.id)
+
+    const queueChannel = supabase
+      .channel('live-queue-mutations')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'students' },
+        () => {
+          fetchQueueAndStats(userProfile.id)
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(queueChannel)
     }
   }, [filterMode, customDate, userProfile.id])
 
@@ -64,10 +81,11 @@ export default function ServiceQueue() {
 
   const fetchQueueAndStats = async (sId) => {
     try {
+      // UPDATED: Now queries ONLY 'Awaiting Service' status for general pending visibility
       const { data: pendingData } = await supabase
         .from('students')
         .select(`id, full_name, phone_number, status, jamb_profile_code, assigned_consultant_id, consultant:profiles!students_assigned_consultant_id_fkey(full_name, vip_auth_code), services(service_name)`)
-        .in('status', ['Awaiting Service', 'Started'])
+        .eq('status', 'Awaiting Service')
         .eq('is_deleted', false)
         .order('payment_confirmed_at', { ascending: true })
 
@@ -112,11 +130,21 @@ export default function ServiceQueue() {
 
   const startJob = async (id) => {
     try {
+      // NEW: Direct Database Verification check to avoid duplicate claims due to laggy clicking
+      const { data: realTimeCheck, error: checkError } = await supabase
+        .from('students')
+        .select('status, full_name')
+        .eq('id', id)
+        .single()
+
+      if (checkError) throw checkError;
+      if (realTimeCheck.status !== 'Awaiting Service') {
+        return alert(`⚠️ This student (${realTimeCheck.full_name}) has already been claimed by another staff member!`);
+      }
+
       const job = pendingQueue.find(s => s.id === id);
-      
-      if (job.assigned_consultant_id && userProfile.id !== job.assigned_consultant_id) {
+      if (job && job.assigned_consultant_id && userProfile.id !== job.assigned_consultant_id) {
         const enteredPin = window.prompt(`🔒 VIP PROTECTED TASK\nThis student belongs to Consultant: ${job.consultant?.full_name}.\n\nEnter the Authorization PIN to perform this task on their behalf:`);
-        
         if (enteredPin !== job.consultant?.vip_auth_code) {
           return alert("❌ Invalid Authorization Code. Access Denied.");
         }
@@ -130,6 +158,7 @@ export default function ServiceQueue() {
           started_at: new Date().toISOString() 
         })
         .eq('id', id)
+
       if (error) throw error
       fetchQueueAndStats(userProfile.id)
     } catch (err) {
@@ -140,25 +169,17 @@ export default function ServiceQueue() {
   const completeJob = async (studentId) => {
     if (!confirm("Confirm completion? This will finalize the task and record your commission.")) return
     try {
-      // 1. Fetch student contextual records
       const { data: student, error: fetchError } = await supabase
         .from('students')
-        .select(`
-          amount_paid, 
-          institution_cost, 
-          service_id, 
-          assigned_consultant_id
-        `)
+        .select(`amount_paid, institution_cost, service_id, assigned_consultant_id`)
         .eq('id', studentId)
         .single()
 
       if (fetchError) throw fetchError
 
-      // Secure live authentication snapshot
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error("Authentication session lost.");
 
-      // 2. FETCH WORKING PERSONNEL CONFIGURATION DIRECTLY FROM DATABASE LAYER
       const { data: staffProfile, error: staffProfileError } = await supabase
         .from('profiles')
         .select('commission_type, commission_value')
@@ -175,17 +196,15 @@ export default function ServiceQueue() {
       const inst = Number(student.institution_cost) || 0;
       const netProfit = paid - inst;
 
-      // 3. Process normal staff commission matching from the live database snapshot
       const staffType = staffProfile.commission_type?.toLowerCase();
       const staffVal = Number(staffProfile.commission_value) || 0;
 
       if (staffType === 'percentage') {
         calculatedComm = netProfit * (staffVal / 100);
       } else {
-        calculatedComm = staffVal; // Your ₦200 configuration reads cleanly here
+        calculatedComm = staffVal;
       }
 
-      // 4. Process Consultant calculation paths if student routing contains mapping parameters
       if (student.assigned_consultant_id) {
         const { data: consultantProfile, error: consultantError } = await supabase
           .from('profiles')
@@ -205,7 +224,6 @@ export default function ServiceQueue() {
         }
       }
 
-      // 5. Commit changes to Database row
       const { error: updateError } = await supabase
         .from('students')
         .update({ 
@@ -214,7 +232,7 @@ export default function ServiceQueue() {
           completed_at: new Date().toISOString(),
           staff_commission: calculatedComm,
           consultant_commission: consultantComm,
-          commission_earned: calculatedComm // backward compatibility fallback
+          commission_earned: calculatedComm 
         })
         .eq('id', studentId)
 
@@ -233,6 +251,17 @@ export default function ServiceQueue() {
     router.push('/')
   }
 
+  // NEW: Search Input query parsing layer
+  const filteredQueue = pendingQueue.filter(student => {
+    const searchWord = queueSearch.toLowerCase().trim();
+    if (!searchWord) return true;
+    return (
+      student.full_name?.toLowerCase().includes(searchWord) ||
+      student.phone_number?.includes(searchWord) ||
+      student.jamb_profile_code?.toLowerCase().includes(searchWord)
+    );
+  });
+
   if (loading) return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-white uppercase font-black text-blue-900 tracking-widest animate-pulse">
       Loading Service Station...
@@ -248,7 +277,6 @@ export default function ServiceQueue() {
             <h1 className="text-2xl md:text-4xl font-black text-blue-950 uppercase italic tracking-tighter">Service Station</h1>
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em]">{userProfile.name} • {userProfile.role}</p>
           </div>
-          {/* Action Navigation Group */}
           <div className="flex items-center gap-3">
             <Link href="/activity-log">
               <span className="px-5 py-2 border-2 border-blue-950 bg-white text-blue-950 rounded-full text-[10px] font-black uppercase tracking-wider cursor-pointer hover:bg-slate-100 shadow-[2px_2px_0px_0px_rgba(26,54,93,1)] transition-all">
@@ -344,12 +372,25 @@ export default function ServiceQueue() {
 
         {/* PENDING QUEUE */}
         <div className="bg-white rounded-[3rem] border-4 border-blue-950 overflow-hidden shadow-[6px_6px_0px_0px_rgba(26,54,93,1)] mb-12">
-            <div className="p-8 border-b-4 border-blue-950 bg-slate-50/50 flex justify-between items-center">
-               <h3 className="text-[11px] font-black text-blue-950 uppercase tracking-[0.2em]">Queue Workflow Ledger ({pendingQueue.length})</h3>
-               <span className="w-3 h-3 bg-blue-500 rounded-full animate-ping"></span>
+            <div className="p-8 border-b-4 border-blue-950 bg-slate-50/50 flex flex-col sm:flex-row justify-between items-center gap-4">
+               <h3 className="text-[11px] font-black text-blue-950 uppercase tracking-[0.2em]">Queue Workflow Ledger ({filteredQueue.length})</h3>
+               
+               {/* NEW: NEO-BRUTALIST LIVE SEARCH BAR CONTAINER */}
+               <div className="w-full sm:w-72 relative">
+                 <input 
+                   type="text" 
+                   value={queueSearch}
+                   onChange={(e) => setQueueSearch(e.target.value)}
+                   placeholder="Search name or phone..." 
+                   className="w-full px-4 py-2 bg-white text-xs font-bold border-2 border-blue-950 rounded-xl outline-none focus:bg-blue-50 text-blue-950 shadow-[2px_2px_0px_0px_rgba(26,54,93,1)] placeholder-slate-400"
+                 />
+                 {queueSearch && (
+                   <button onClick={() => setQueueSearch('')} className="absolute right-3 top-2 text-[10px] font-black text-slate-400 hover:text-red-500">✕</button>
+                 )}
+               </div>
             </div>
             <div className="divide-y-2 divide-slate-100">
-             {pendingQueue.map((student) => (
+             {filteredQueue.map((student) => (
                <div key={student.id} className="p-8 flex flex-col md:flex-row justify-between items-center gap-6 hover:bg-blue-50/30 transition-all">
                  <div className="text-center md:text-left">
                     <div className="flex flex-wrap items-center gap-3 justify-center md:justify-start">
@@ -360,20 +401,16 @@ export default function ServiceQueue() {
                           </span>
                        )}
                     </div>
-                    <p className="text-[10px] font-bold text-slate-400 mt-1 uppercase">{student.services?.service_name}</p>
+                    <p className="text-[10px] font-bold text-slate-400 mt-1 uppercase">{student.services?.service_name} • {student.phone_number}</p>
                     <p className="text-[9px] font-black text-blue-500 mt-1 uppercase">STATUS MAPPING: {student.status}</p>
                  </div>
-                 {student.status === 'Started' ? (
-                     <button disabled className="bg-slate-100 text-slate-400 px-8 py-3 border-2 border-slate-200 rounded-2xl text-[10px] font-black uppercase cursor-not-allowed">In Progress</button>
-                 ) : (
-                    <button onClick={() => startJob(student.id)} className={`${student.assigned_consultant_id ? 'bg-purple-50 border-2 border-purple-200 text-purple-900 hover:bg-purple-900' : 'bg-white border-2 border-slate-100 text-blue-950 hover:border-blue-900'} px-8 py-3 rounded-2xl text-[10px] font-black uppercase hover:text-white transition-all`}>
-                      {student.assigned_consultant_id ? '🔐 Start VIP Task' : 'Start Task'}
-                    </button>
-                 )}
+                 <button onClick={() => startJob(student.id)} className={`${student.assigned_consultant_id ? 'bg-purple-50 border-2 border-purple-200 text-purple-900 hover:bg-purple-900' : 'bg-white border-2 border-slate-100 text-blue-950 hover:border-blue-900'} px-8 py-3 rounded-2xl text-[10px] font-black uppercase hover:text-white transition-all`}>
+                   {student.assigned_consultant_id ? '🔐 Start VIP Task' : 'Start Task'}
+                 </button>
                </div>
              ))}
-             {pendingQueue.length === 0 && (
-               <div className="p-20 text-center text-slate-300 font-black uppercase text-[10px] tracking-[0.5em]">Station Clear</div>
+             {filteredQueue.length === 0 && (
+               <div className="p-20 text-center text-slate-300 font-black uppercase text-[10px] tracking-[0.5em]">No matching jobs inside queue</div>
              )}
             </div>
         </div>
