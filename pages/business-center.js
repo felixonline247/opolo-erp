@@ -10,7 +10,7 @@ export default function BusinessCenterPortal() {
   const [agentProfile, setAgentProfile] = useState({ id: null, name: '', email: '' })
   const [agentJobs, setAgentJobs] = useState([]) 
   
-  // NEW: Securely track the loaded key state to prevent 'undefined' popup passes
+  // Securely track the loaded key state to prevent 'undefined' popup passes
   const [paystackKey, setPaystackKey] = useState('')
 
   const [formData, setFormData] = useState({
@@ -26,7 +26,7 @@ export default function BusinessCenterPortal() {
   useEffect(() => {
     initializeAgent()
     
-    // NEW: Explicitly capture and commit the environment key to memory on browser mount
+    // Explicitly capture and commit the environment key to memory on browser mount
     const liveKey = process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY?.trim()
     if (liveKey) {
       setPaystackKey(liveKey)
@@ -85,8 +85,10 @@ export default function BusinessCenterPortal() {
     e.preventDefault()
     if (!formData.service_id) return alert("Please select a valid service specification.")
     
-    // Safety Fallback Check: Block action if runtime verification key didn't hydrate
-    if (!paystackKey) {
+    // FIXED: Dual-channel fallback configuration validation lookup strategy
+    const activeKey = paystackKey || process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY?.trim();
+
+    if (!activeKey) {
       return alert("Application Configuration Error: Paystack API Verification Key not found. Please check Vercel environment variables.")
     }
 
@@ -98,11 +100,11 @@ export default function BusinessCenterPortal() {
 
     const uniqueTxRef = `OPL-B2B-${Date.now()}-${Math.floor(Math.random() * 1000)}`
 
-    // UPDATED: Now referencing 'paystackKey' state variable parameters securely
+    // Configure Paystack Runtime Options Inline Popup referencing the safe verified key
     const handler = window.PaystackPop.setup({
-      key: paystackKey, 
+      key: activeKey, 
       email: agentProfile.email,
-      amount: totalCost * 100, 
+      amount: totalCost * 100, // Paystack reads raw amount metrics in kobo
       currency: 'NGN',
       ref: uniqueTxRef,
       metadata: {
