@@ -27,7 +27,7 @@ export default function BusinessCenterPortal() {
     initializeAgent()
     
     // NEW: Explicitly capture and commit the environment key to memory on browser mount
-    const liveKey = process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY
+    const liveKey = process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY?.trim()
     if (liveKey) {
       setPaystackKey(liveKey)
     } else {
