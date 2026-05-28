@@ -8,8 +8,11 @@ export default function BusinessCenterPortal() {
   const [processing, setProcessing] = useState(false)
   const [services, setServices] = useState([])
   const [agentProfile, setAgentProfile] = useState({ id: null, name: '', email: '' })
-  const [agentJobs, setAgentJobs] = useState([]) // Tracking queue for agent's transparency
+  const [agentJobs, setAgentJobs] = useState([]) 
   
+  // NEW: Securely track the loaded key state to prevent 'undefined' popup passes
+  const [paystackKey, setPaystackKey] = useState('')
+
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
@@ -22,6 +25,14 @@ export default function BusinessCenterPortal() {
 
   useEffect(() => {
     initializeAgent()
+    
+    // NEW: Explicitly capture and commit the environment key to memory on browser mount
+    const liveKey = process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY
+    if (liveKey) {
+      setPaystackKey(liveKey)
+    } else {
+      console.warn("⚠️ Paystack Public Key missing from environment parameters configuration.")
+    }
   }, [])
 
   const initializeAgent = async () => {
@@ -45,15 +56,12 @@ export default function BusinessCenterPortal() {
           email: profile.email || session.user.email
         })
         
-        // UPDATED: Filter services to only load those explicitly configured with an agent price > 0
         const { data: srv } = await supabase
           .from('services')
           .select('id, service_name, agent_price')
-          .gt('agent_price', 0) // Strictly greater than 0
+          .gt('agent_price', 0) 
         
         setServices(srv || [])
-        
-        // Load this agent's transaction queue ledger history
         fetchAgentQueue(profile.id)
         setLoading(false)
       }
@@ -77,20 +85,24 @@ export default function BusinessCenterPortal() {
     e.preventDefault()
     if (!formData.service_id) return alert("Please select a valid service specification.")
     
+    // Safety Fallback Check: Block action if runtime verification key didn't hydrate
+    if (!paystackKey) {
+      return alert("Application Configuration Error: Paystack API Verification Key not found. Please check Vercel environment variables.")
+    }
+
     const selectedService = services.find(s => String(s.id) === String(formData.service_id))
     const totalCost = Number(selectedService?.agent_price || 0)
 
     if (totalCost <= 0) return alert("Pricing invalid or not preconfigured by Manager.")
     setProcessing(true)
 
-    // Generate reference code matching agent actions
     const uniqueTxRef = `OPL-B2B-${Date.now()}-${Math.floor(Math.random() * 1000)}`
 
-    // Configure Paystack Runtime Options Inline Popup
+    // UPDATED: Now referencing 'paystackKey' state variable parameters securely
     const handler = window.PaystackPop.setup({
-      key: process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY, 
+      key: paystackKey, 
       email: agentProfile.email,
-      amount: totalCost * 100, // Paystack reads raw amount metrics in kobo
+      amount: totalCost * 100, 
       currency: 'NGN',
       ref: uniqueTxRef,
       metadata: {
