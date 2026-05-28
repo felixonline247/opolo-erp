@@ -16,10 +16,19 @@ export default function Dashboard() {
   const [searchTerm, setSearchTerm] = useState('')
   const [filterDate, setFilterDate] = useState('today')
   const [isChatOpen, setIsChatOpen] = useState(false)
+  
+  // NEW: Bulletproof client-side hydration mount guard tracking flag
+  const [isMounted, setIsMounted] = useState(false)
+  
   const router = useRouter()
 
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 30
+
+  // Handle client-side mounting safely to prevent hydration desync errors
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
 
   useEffect(() => {
     const setup = async () => {
@@ -36,7 +45,7 @@ export default function Dashboard() {
       
       const role = profile?.role || 'Front Desk'
       
-      // NEW: Secure cross-routing gatekeeper redirection rule
+      // Secure cross-routing gatekeeper redirection rule
       if (role === 'Partner Agent') {
         return router.push('/business-center')
       }
@@ -61,7 +70,7 @@ export default function Dashboard() {
     const { data: srv } = await supabase.from('services').select('*')
     setServices(srv || [])
 
-    // UPDATED: Included registration_source to isolate third-party agent records
+    // Included registration_source to isolate third-party agent records
     let query = supabase.from('students').select(`
       *, 
       services(service_name, price, commission_type, commission_value)
@@ -190,7 +199,10 @@ export default function Dashboard() {
   const currentItems = filteredStudents.slice(indexOfFirstItem, indexOfLastItem);
   const totalPages = Math.ceil(filteredStudents.length / itemsPerPage);
 
-  if (loading && !students.length) return <div className="p-20 text-center font-black text-blue-900 uppercase">Opolo ERP Loading...</div>
+  // Fallback Loading Screen
+  if ((loading && !students.length) || !isMounted) {
+    return <div className="p-20 text-center font-black text-blue-900 uppercase tracking-widest animate-pulse">Opolo ERP Loading...</div>
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 py-10 font-sans px-4 relative overflow-x-hidden text-blue-950">
@@ -279,10 +291,9 @@ export default function Dashboard() {
                           <div className="flex items-center gap-2">
                             <div className="font-black text-slate-800 uppercase text-xs tracking-tight">{student.full_name}</div>
                             
-                            {/* UPDATED: Renders distinct styling tag if student originates from external B2B desk */}
                             {student.registration_source === 'Business Center' ? (
                               <span className="bg-purple-900 text-white text-[8px] font-black uppercase px-2 py-0.5 rounded shadow-sm border border-purple-950 animate-pulse">
-                                🏢 Bussiness-Centre
+                                🏢 Business-Centre
                               </span>
                             ) : student.assigned_consultant_id ? (
                               <span className="bg-purple-100 text-purple-700 text-[8px] font-black uppercase px-2 py-0.5 rounded">VIP</span>
@@ -294,12 +305,12 @@ export default function Dashboard() {
                         </td>
                         <td className="p-5">
                           <div className="text-xs font-bold text-slate-700">{student.services?.service_name || 'General Service'}</div>
-                          <div className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">₦{key = Number(student.amount_paid || student.services?.price || 0).toLocaleString()} • {student.payment_method || 'Unpaid'}</div>
+                          {/* FIXED: Removed the invalid "key =" evaluation template typo statement */}
+                          <div className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">₦{Number(student.amount_paid || student.services?.price || 0).toLocaleString()} • {student.payment_method || 'Unpaid'}</div>
                         </td>
                         <td className="p-5 text-right">
                           {(userRole === 'Account Officer' || userRole === 'Account') && student.status === 'Awaiting Payment' && (
                             <div className="flex gap-2 justify-end">
-                              {/* UPDATED: Switches payment triggers for external Paystack automated clearance records */}
                               {student.registration_source === 'Business Center' ? (
                                 <button
                                   onClick={async () => {
