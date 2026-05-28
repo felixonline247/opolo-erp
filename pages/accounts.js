@@ -9,19 +9,42 @@ export default function AccountsDashboard() {
   const [isChatOpen, setIsChatOpen] = useState(false)
   
   // Filtering States
-  const [timeframe, setTimeframe] = useState('today') // today, week, month, custom, all
+  const [timeframe, setTimeframe] = useState('today') 
   const [customDates, setCustomDates] = useState({ start: '', end: '' })
   
   const [userProfile, setUserProfile] = useState({ name: '', email: '', id: null, role: '' })
   const [pendingStudents, setPendingStudents] = useState([])
-  const [customPrices, setCustomPrices] = useState({}) // NEW: Tracks overridden VIP prices
+  const [customPrices, setCustomPrices] = useState({}) 
+  
+  // SYNCHRONIZED: Default visibility matrix
+  const [visibility, setVisibility] = useState({
+    showGross: true,
+    showCommissions: true,
+    showRemittance: true,
+    showNet: true,
+    showAgent: true
+  })
+
   const [stats, setStats] = useState({ 
     totalGross: 0,    
     netProfit: 0,     
     remittance: 0,    
-    commissions: 0    
+    commissions: 0,
+    agentGross: 0 
   })
   const router = useRouter()
+
+  // FIXED: Pulls visibility rules directly from the global master key set by the Manager
+  useEffect(() => {
+    const cachedVisibility = localStorage.getItem('opolo_master_visibility')
+    if (cachedVisibility) {
+      try {
+        setVisibility(JSON.parse(cachedVisibility))
+      } catch (e) {
+        console.error("Failed parsing master visibility stream:", e)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     const initializePage = async () => {
@@ -30,13 +53,19 @@ export default function AccountsDashboard() {
     initializePage()
   }, [])
 
-  // Re-fetch stats whenever filters change
   useEffect(() => {
     if (userProfile.id) {
       fetchPendingData()
       fetchFinanceStats()
     }
   }, [timeframe, customDates, userProfile.id])
+
+  // FIXED: Syncs live manual adjustments to the shared storage space
+  const toggleVisibilitySetting = (key) => {
+    const updatedVisibility = { ...visibility, [key]: !visibility[key] }
+    setVisibility(updatedVisibility)
+    localStorage.setItem('opolo_master_visibility', JSON.stringify(updatedVisibility))
+  }
 
   const checkAccountAccess = async () => {
     try {
@@ -94,7 +123,6 @@ export default function AccountsDashboard() {
 
   const fetchPendingData = async () => {
     try {
-      // NEW: Included assigned_consultant_id and joining the consultant's profile name
       const { data, error } = await supabase
         .from('students')
         .select(`
@@ -104,6 +132,7 @@ export default function AccountsDashboard() {
           institution_cost, 
           created_at, 
           assigned_consultant_id,
+          registration_source,
           consultant:profiles!students_assigned_consultant_id_fkey(full_name),
           services (service_name)
         `)
@@ -124,7 +153,7 @@ export default function AccountsDashboard() {
     try {
       let query = supabase
         .from('students')
-        .select(`amount_paid, institution_cost, staff_commission, consultant_commission, commission_earned, status`)
+        .select(`amount_paid, institution_cost, staff_commission, consultant_commission, commission_earned, status, registration_source`)
         .in('status', ['Awaiting Service', 'Started', 'Completed'])
         .eq('is_deleted', false)
 
@@ -136,28 +165,36 @@ export default function AccountsDashboard() {
       if (error) throw error
       
       if (data) {
-        let gross = 0; let remit = 0; let comms = 0; let profit = 0;
+        let gross = 0; let remit = 0; let comms = 0; let profit = 0; let agentInflow = 0;
 
         data.forEach(item => {
           const valPaid = Number(item.amount_paid || 0)
           const valInst = Number(item.institution_cost || 0)
-          // Sums up standard commissions AND consultant commissions
           const valComm = Number(item.commission_earned || item.staff_commission || 0) + Number(item.consultant_commission || 0) 
           
           gross += valPaid
           remit += valInst
-          profit += (valPaid - valInst - valComm) // True Net Profit calculation
           comms += valComm
+          profit += (valPaid - valInst - valComm) 
+
+          if (item.registration_source === 'Business Center') {
+            agentInflow += valPaid
+          }
         })
 
-        setStats({ totalGross: gross, netProfit: profit, remittance: remit, commissions: comms })
+        setStats({ 
+          totalGross: gross, 
+          netProfit: profit, 
+          remittance: remit, 
+          commissions: comms,
+          agentGross: agentInflow 
+        })
       }
     } catch (err) {
       console.error("Stats Error:", err.message)
     }
   }
 
-  // Handle on-the-fly price edits for VIPs
   const handlePriceEdit = (id, newPrice) => {
     setCustomPrices(prev => ({ ...prev, [id]: newPrice }))
   }
@@ -165,7 +202,6 @@ export default function AccountsDashboard() {
   const confirmPayment = async (studentId, method) => {
     if (isProcessing) return;
     
-    // Check if the accountant set a custom VIP price, otherwise use default
     const student = pendingStudents.find(s => s.id === studentId);
     const finalAmount = customPrices[studentId] !== undefined ? Number(customPrices[studentId]) : Number(student.amount_paid);
 
@@ -179,7 +215,7 @@ export default function AccountsDashboard() {
         .update({ 
           status: 'Awaiting Service', 
           payment_method: method,
-          amount_paid: finalAmount, // Overrides the price in the DB
+          amount_paid: finalAmount, 
           account_officer_email: userProfile.email,
           payment_confirmed_at: new Date().toISOString() 
         })
@@ -198,6 +234,36 @@ export default function AccountsDashboard() {
     }
   }
 
+  const handleBusinessCenterApproval = async (studentId) => {
+    if (isProcessing) return;
+    const student = pendingStudents.find(s => s.id === studentId);
+    
+    const verify = window.confirm(`Verify cash parameters and authorize release to Service Queue for ${student.full_name}?`);
+    if (!verify) return;
+
+    setIsProcessing(true);
+    try {
+      const { error } = await supabase
+        .from('students')
+        .update({
+          status: 'Awaiting Service',
+          account_officer_email: userProfile.email,
+          payment_confirmed_at: new Date().toISOString()
+        })
+        .eq('id', studentId);
+
+      if (error) throw error;
+
+      setPendingStudents(prev => prev.filter(s => s.id !== studentId));
+      await fetchFinanceStats();
+      alert("B2B Parameters verified. Student released to operations workflow queue.");
+    } catch (err) {
+      alert("Approval Error: " + err.message);
+    } finally {
+      setIsProcessing(false);
+    }
+  }
+
   if (loading) return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-white uppercase font-black text-blue-900 tracking-widest animate-pulse">
       Loading Accounts...
@@ -209,7 +275,7 @@ export default function AccountsDashboard() {
       <div className="max-w-7xl mx-auto">
         
         {/* HEADER */}
-        <header className="flex flex-col md:flex-row justify-between items-start mb-10 gap-4">
+        <header className="flex flex-col md:flex-row justify-between items-start mb-6 gap-4">
           <div>
             <h1 className="text-4xl font-black uppercase tracking-tighter italic">Accounts Portal</h1>
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em]">Active: {userProfile.name} ({userProfile.role})</p>
@@ -236,6 +302,39 @@ export default function AccountsDashboard() {
           </div>
         </header>
 
+        {/* METRICS TOGGLES ROW (Shows for Managers/Admins visiting the Accounts page) */}
+        {(userProfile.role === 'Manager' || userProfile.role === 'Admin') && (
+          <div className="mb-8 p-4 bg-white border border-slate-200 rounded-[1.5rem] shadow-sm flex flex-wrap gap-4 items-center">
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-2">Metrics Control switches:</span>
+            <div className="flex flex-wrap gap-2">
+              <button 
+                onClick={() => toggleVisibilitySetting('showGross')}
+                className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase border transition-all ${visibility.showGross ? 'bg-blue-100 text-blue-900 border-blue-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}
+              >
+                Gross Rev: {visibility.showGross ? 'ON' : 'OFF'}
+              </button>
+              <button 
+                onClick={() => toggleVisibilitySetting('showRemittance')}
+                className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase border transition-all ${visibility.showRemittance ? 'bg-red-100 text-red-900 border-red-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}
+              >
+                Remittance: {visibility.showRemittance ? 'ON' : 'OFF'}
+              </button>
+              <button 
+                onClick={() => toggleVisibilitySetting('showNet')}
+                className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase border transition-all ${visibility.showNet ? 'bg-green-100 text-green-900 border-green-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}
+              >
+                Net Profit: {visibility.showNet ? 'ON' : 'OFF'}
+              </button>
+              <button 
+                onClick={() => toggleVisibilitySetting('showAgent')}
+                className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase border transition-all ${visibility.showAgent ? 'bg-purple-100 text-purple-900 border-purple-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}
+              >
+                Partner Agents: {visibility.showAgent ? 'ON' : 'OFF'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* CUSTOM DATE PICKER */}
         {timeframe === 'custom' && (
           <div className="mb-8 flex gap-4 bg-blue-50 p-6 rounded-[2rem] border border-blue-100 animate-in fade-in slide-in-from-top-4">
@@ -259,22 +358,38 @@ export default function AccountsDashboard() {
         )}
 
         {/* FINANCIAL METRICS GRID */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-10">
-          <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
-            <p className="text-[9px] font-black text-slate-400 uppercase mb-2 tracking-widest">Gross {timeframe} Revenue</p>
-            <h2 className="text-3xl font-black text-slate-900">₦{stats.totalGross.toLocaleString()}</h2>
-          </div>
-          <div className="bg-red-50 p-8 rounded-[2.5rem] border border-red-100">
-            <p className="text-[9px] font-black text-red-400 uppercase mb-2 tracking-widest">Institution Remit</p>
-            <h2 className="text-3xl font-black text-red-600">₦{stats.remittance.toLocaleString()}</h2>
-          </div>
-          <div className="bg-blue-950 p-8 rounded-[2.5rem] text-white shadow-2xl shadow-blue-900/30 ring-4 ring-blue-900/10">
-            <p className="text-[9px] font-black uppercase mb-2 tracking-widest opacity-60">Net Center Profit</p>
-            <h2 className="text-3xl font-black">₦{stats.netProfit.toLocaleString()}</h2>
-          </div>
-          <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-10">
+          {visibility.showGross && (
+            <div className="bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm transition-all animate-in fade-in zoom-in-95">
+              <p className="text-[9px] font-black text-slate-400 uppercase mb-2 tracking-widest">Gross {timeframe} Revenue</p>
+              <h2 className="text-2xl font-black text-slate-900">₦{stats.totalGross.toLocaleString()}</h2>
+            </div>
+          )}
+
+          {visibility.showRemittance && (
+            <div className="bg-red-50 p-6 rounded-[2rem] border border-red-100 transition-all animate-in fade-in zoom-in-95">
+              <p className="text-[9px] font-black text-red-400 uppercase mb-2 tracking-widest">Institution Remit</p>
+              <h2 className="text-2xl font-black text-red-600">₦{stats.remittance.toLocaleString()}</h2>
+            </div>
+          )}
+
+          {visibility.showNet && (
+            <div className="bg-blue-950 p-6 rounded-[2rem] text-white shadow-xl shadow-blue-900/10 transition-all animate-in fade-in zoom-in-95">
+              <p className="text-[9px] font-black uppercase mb-2 tracking-widest opacity-60">Net Center Profit</p>
+              <h2 className="text-2xl font-black">₦{stats.netProfit.toLocaleString()}</h2>
+            </div>
+          )}
+
+          {visibility.showAgent && (
+            <div className="bg-purple-900 p-6 rounded-[2rem] text-white shadow-xl shadow-purple-950/20 transition-all animate-in fade-in zoom-in-95">
+              <p className="text-[9px] font-black uppercase mb-2 tracking-widest opacity-70">Partner Agent Income</p>
+              <h2 className="text-2xl font-black">₦{stats.agentGross.toLocaleString()}</h2>
+            </div>
+          )}
+
+          <div className="bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm">
             <p className="text-[9px] font-black text-blue-600 uppercase mb-2 tracking-widest">Staff Payouts</p>
-            <h2 className="text-3xl font-black text-blue-950">₦{stats.commissions.toLocaleString()}</h2>
+            <h2 className="text-2xl font-black text-blue-950">₦{stats.commissions.toLocaleString()}</h2>
           </div>
         </div>
 
@@ -291,17 +406,18 @@ export default function AccountsDashboard() {
           <div className="divide-y divide-slate-100">
             {pendingStudents.map(student => (
               <div key={student.id} className="p-10 flex flex-col md:flex-row justify-between items-center gap-8 hover:bg-slate-50/80 transition-all">
-                
-                {/* Left Side: Info */}
                 <div className="flex-1">
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-3">
                     <p className="font-black text-blue-950 uppercase text-2xl tracking-tighter">{student.full_name}</p>
-                    {/* VIP BADGE */}
-                    {student.assigned_consultant_id && (
+                    {student.registration_source === 'Business Center' ? (
+                      <span className="bg-purple-900 text-white text-[8px] font-black uppercase px-3 py-1 rounded-md tracking-wider border border-purple-950">
+                        🏢 Business-Centre
+                      </span>
+                    ) : student.assigned_consultant_id ? (
                       <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest shadow-sm">
                         ⭐ VIP: {student.consultant?.full_name}
                       </span>
-                    )}
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-3 mt-2">
                     <span className="bg-blue-100 text-blue-600 text-[9px] font-black px-3 py-1 rounded-full uppercase">{student.services?.service_name}</span>
@@ -309,38 +425,45 @@ export default function AccountsDashboard() {
                   </div>
                 </div>
 
-                {/* Right Side: Actions & Pricing */}
                 <div className="flex flex-col items-end gap-4 w-full md:w-auto">
-                    <div className="text-right flex flex-col items-end">
-                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Due</p>
-                      
-                      {/* VIP CUSTOM PRICING INPUT */}
-                      {student.assigned_consultant_id ? (
-                        <div className="relative">
-                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-purple-900 font-black">₦</span>
-                          <input 
-                            type="number" 
-                            value={customPrices[student.id] !== undefined ? customPrices[student.id] : student.amount_paid}
-                            onChange={(e) => handlePriceEdit(student.id, e.target.value)}
-                            className="bg-purple-50 border-2 border-purple-200 text-purple-950 font-black text-2xl w-40 pl-8 pr-4 py-2 rounded-2xl focus:outline-none focus:border-purple-500 focus:ring-4 ring-purple-100 transition-all"
-                          />
-                        </div>
-                      ) : (
-                        <p className="text-3xl font-black text-blue-950">₦{Number(student.amount_paid).toLocaleString()}</p>
-                      )}
-                    </div>
+                  <div className="text-right flex flex-col items-end">
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Due</p>
+                    {student.assigned_consultant_id && student.registration_source !== 'Business Center' ? (
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-purple-900 font-black">₦</span>
+                        <input 
+                          type="number" 
+                          value={customPrices[student.id] !== undefined ? customPrices[student.id] : student.amount_paid}
+                          onChange={(e) => handlePriceEdit(student.id, e.target.value)}
+                          className="bg-purple-50 border-2 border-purple-200 text-purple-950 font-black text-2xl w-40 pl-8 pr-4 py-2 rounded-2xl focus:outline-none focus:border-purple-500 focus:ring-4 ring-purple-100 transition-all"
+                        />
+                      </div>
+                    ) : (
+                      <p className="text-3xl font-black text-blue-950">₦{Number(student.amount_paid).toLocaleString()}</p>
+                    )}
+                  </div>
                     
-                    <div className="flex gap-2 w-full md:w-auto">
-                    {['Cash', 'Transfer', 'POS'].map(method => (
+                  <div className="flex gap-2 w-full md:w-auto">
+                    {student.registration_source === 'Business Center' ? (
                       <button
-                        key={method}
                         disabled={isProcessing}
-                        onClick={() => confirmPayment(student.id, method)}
-                        className="flex-1 md:flex-none px-8 py-4 bg-white border-2 border-slate-100 text-slate-900 text-[10px] font-black rounded-2xl hover:border-blue-900 hover:bg-blue-900 hover:text-white transition-all uppercase tracking-widest"
+                        onClick={() => handleBusinessCenterApproval(student.id)}
+                        className="w-full md:w-auto px-10 py-4 bg-purple-900 hover:bg-black text-white text-[10px] font-black rounded-2xl transition-all uppercase tracking-widest shadow-md"
                       >
-                        {method}
+                        {isProcessing ? "Processing..." : "Approve Release"}
                       </button>
-                    ))}
+                    ) : (
+                      ['Cash', 'Transfer', 'POS'].map(method => (
+                        <button
+                          key={method}
+                          disabled={isProcessing}
+                          onClick={() => confirmPayment(student.id, method)}
+                          className="flex-1 md:flex-none px-8 py-4 bg-white border-2 border-slate-100 text-slate-900 text-[10px] font-black rounded-2xl hover:border-blue-900 hover:bg-blue-900 hover:text-white transition-all uppercase tracking-widest"
+                        >
+                          {method}
+                        </button>
+                      ))
+                    )}
                   </div>
                 </div>
               </div>

@@ -7,7 +7,7 @@ export default function Settings() {
   const [services, setServices] = useState([])
   const [staff, setStaff] = useState([])
   const [editingId, setEditingId] = useState(null)
-  const [editingStaffId, setEditingStaffId] = useState(null) // NEW: Tracks active staff edit row
+  const [editingStaffId, setEditingStaffId] = useState(null) 
   
   // SMS Template State
   const [smsTemplate, setSmsTemplate] = useState('')
@@ -16,7 +16,8 @@ export default function Settings() {
   const [formData, setFormData] = useState({ 
     service_name: '', 
     price: '', 
-    institution_cost: ''
+    institution_cost: '',
+    agent_price: '' // NEW: Track customized B2B agent base rates
   })
 
   const [staffData, setStaffData] = useState({ 
@@ -50,6 +51,7 @@ export default function Settings() {
   }
 
   const fetchServices = async () => {
+    // UPDATED: Selecting agent_price dynamically from database table mapping rows
     const { data } = await supabase.from('services').select('*').order('created_at', { ascending: true })
     setServices(data || [])
   }
@@ -86,7 +88,8 @@ export default function Settings() {
     const payload = {
       ...formData,
       price: parseFloat(formData.price),
-      institution_cost: parseFloat(formData.institution_cost) || 0
+      institution_cost: parseFloat(formData.institution_cost) || 0,
+      agent_price: parseFloat(formData.agent_price) || 0 // NEW: Injects custom B2B rate payload entries
     }
 
     if (editingId) {
@@ -95,7 +98,7 @@ export default function Settings() {
       await supabase.from('services').insert([payload])
     }
     
-    setFormData({ service_name: '', price: '', institution_cost: '' })
+    setFormData({ service_name: '', price: '', institution_cost: '', agent_price: '' })
     setEditingId(null)
     fetchServices()
   }
@@ -113,7 +116,6 @@ export default function Settings() {
     }
 
     let error;
-    // UPDATED: Dynamic routing logic to handle updates if editingStaffId exists
     if (editingStaffId) {
       const { error: updateError } = await supabase
         .from('profiles')
@@ -159,7 +161,7 @@ export default function Settings() {
   if (loading) return null
 
   return (
-    <div className="min-h-screen bg-white font-sans p-6 md:p-12">
+    <div className="min-h-screen bg-white font-sans p-6 md:p-12 text-blue-950">
       <div className="max-w-4xl mx-auto">
         <div className="flex justify-between items-center mb-12">
           <div>
@@ -218,15 +220,23 @@ export default function Settings() {
           <div className="bg-slate-50 p-8 rounded-[2rem] mb-8 border border-slate-100 shadow-sm">
             <h2 className="text-xs font-black text-slate-400 uppercase mb-6">{editingId ? 'Edit Existing Service' : 'Add New Registration Service'}</h2>
             <form onSubmit={handleServiceSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <input className="p-4 rounded-xl border-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" placeholder="Service Name (e.g., JAMB UTME)" value={formData.service_name} onChange={(e) => setFormData({...formData, service_name: e.target.value})} required />
-              <input type="number" className="p-4 rounded-xl border-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" placeholder="Total Price to Student (₦)" value={formData.price} onChange={(e) => setFormData({...formData, price: e.target.value})} required />
-              <div className="md:col-span-2">
-                <label className="block text-[9px] font-black text-red-500 uppercase mb-1 ml-1">Institutional Cost (Non-Profit Pass-through)</label>
-                <input type="number" className="w-full p-4 rounded-xl border-none ring-1 ring-red-100 bg-red-50/30 focus:ring-2 focus:ring-red-400 outline-none text-sm font-bold text-red-900 placeholder-red-300" placeholder="Amount paid to JAMB/University (₦)" value={formData.institution_cost} onChange={(e) => setFormData({...formData, institution_cost: e.target.value})} required />
+              <input className="p-4 rounded-xl border-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold bg-white" placeholder="Service Name (e.g., JAMB UTME)" value={formData.service_name} onChange={(e) => setFormData({...formData, service_name: e.target.value})} required />
+              <input type="number" className="p-4 rounded-xl border-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold bg-white" placeholder="Total Price to Student (₦)" value={formData.price} onChange={(e) => setFormData({...formData, price: e.target.value})} required />
+              
+              <div className="md:col-span-1">
+                <label className="block text-[9px] font-black text-red-500 uppercase mb-1 ml-1">Institutional Cost (Pass-through)</label>
+                <input type="number" className="w-full p-4 rounded-xl border-none ring-1 ring-red-100 bg-red-50/30 focus:ring-2 focus:ring-red-400 outline-none text-sm font-bold text-red-900 placeholder-red-300" placeholder="Amount paid to JAMB (₦)" value={formData.institution_cost} onChange={(e) => setFormData({...formData, institution_cost: e.target.value})} required />
               </div>
+
+              {/* NEW: BUSINESS CENTER B2B DISCOUNT PRICE CONFIGURATION FORM FIELD */}
+              <div className="md:col-span-1">
+                <label className="block text-[9px] font-black text-purple-600 uppercase mb-1 ml-1">Business Center Agent Price</label>
+                <input type="number" className="w-full p-4 rounded-xl border-none ring-1 ring-purple-200 bg-purple-50/30 focus:ring-2 focus:ring-purple-500 outline-none text-sm font-bold text-purple-900 placeholder-purple-300" placeholder="Discounted Partner Price (₦)" value={formData.agent_price} onChange={(e) => setFormData({...formData, agent_price: e.target.value})} required />
+              </div>
+
               <div className="md:col-span-2 flex gap-2 mt-2">
                 <button type="submit" className="flex-1 bg-blue-900 text-white p-4 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-black transition">{editingId ? 'Save Changes' : 'Create Service'}</button>
-                {editingId && <button onClick={() => {setEditingId(null); setFormData({service_name: '', price: '', institution_cost: ''})}} className="bg-slate-200 text-slate-600 px-6 rounded-xl font-black text-xs uppercase">Cancel</button>}
+                {editingId && <button onClick={() => {setEditingId(null); setFormData({service_name: '', price: '', institution_cost: '', agent_price: ''})}} className="bg-slate-200 text-slate-600 px-6 rounded-xl font-black text-xs uppercase">Cancel</button>}
               </div>
             </form>
           </div>
@@ -236,10 +246,12 @@ export default function Settings() {
               <div key={s.id} className="flex justify-between items-center p-6 bg-white border border-slate-100 rounded-2xl hover:shadow-md transition-shadow">
                 <div>
                   <p className="font-black text-blue-950 uppercase text-sm">{s.service_name}</p>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase">₦{s.price?.toLocaleString()} Student Fee • <span className="text-red-400 ml-1">₦{s.institution_cost?.toLocaleString()} Inst. Cost</span></p>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase">
+                    ₦{s.price?.toLocaleString()} Student Fee • <span className="text-red-500">₦{s.institution_cost?.toLocaleString()} Inst. Cost</span> • <span className="text-purple-600 font-black">₦{Number(s.agent_price || 0).toLocaleString()} Agent Rate</span>
+                  </p>
                 </div>
                 <div className="flex gap-4">
-                  <button onClick={() => {setEditingId(s.id); setFormData({ service_name: s.service_name, price: s.price, institution_cost: s.institution_cost }); }} className="text-[10px] font-black text-blue-600 uppercase hover:underline">Edit</button>
+                  <button onClick={() => {setEditingId(s.id); setFormData({ service_name: s.service_name, price: s.price, institution_cost: s.institution_cost, agent_price: s.agent_price || '' }); }} className="text-[10px] font-black text-blue-600 uppercase hover:underline">Edit</button>
                   <button onClick={() => deleteService(s.id)} className="text-[10px] font-black text-red-500 uppercase hover:underline">Delete</button>
                 </div>
               </div>
@@ -251,7 +263,6 @@ export default function Settings() {
         <div className="mb-12">
           <h3 className="text-[10px] font-black text-blue-900 uppercase tracking-[0.3em] mb-6 ml-2">Staff & User Permissions</h3>
           <div className="bg-blue-950 p-8 rounded-[2rem] mb-8 shadow-xl shadow-blue-900/20">
-            {/* UPDATED HEADER: Changes depending on editing state */}
             <h2 className="text-xs font-black text-blue-300 uppercase mb-6">
               {editingStaffId ? `Edit Personnel Settings: ${staffData.full_name}` : 'Register New Personnel with Commission'}
             </h2>
@@ -278,6 +289,8 @@ export default function Settings() {
                   <option value="Service Staff">Service Staff</option>
                   <option value="Account">Account Officer</option>
                   <option value="Consultant">Consultant (VIP)</option>
+                  {/* NEW: DYNAMIC PARTNER AGENT ACCOUNT ALLOCATION ROLE OPTION */}
+                  <option value="Partner Agent">Partner Agent (B2B)</option>
                   <option value="Manager">Manager</option>
                 </select>
               </div>
@@ -297,7 +310,6 @@ export default function Settings() {
                 </div>
               )}
 
-              {/* UPDATED BUTTON ACTIONS: Handles changes cleanly */}
               <div className="md:col-span-2 flex gap-2 mt-2">
                 <button type="submit" className="flex-1 bg-blue-500 text-white p-4 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-white hover:text-blue-950 transition">
                   {editingStaffId ? 'Save Personnel Changes' : 'Register Staff'}
@@ -318,7 +330,12 @@ export default function Settings() {
                   <p className="font-black text-blue-950 uppercase text-xs truncate">{member.full_name || 'Awaiting Signup'}</p>
                   <p className="text-[10px] text-slate-400 font-bold uppercase mb-2">{member.email}</p>
                   <div className="flex flex-wrap gap-2 items-center">
-                    <span className={`text-[8px] font-black px-2 py-1 rounded-md uppercase tracking-widest ${member.role === 'Manager' ? 'bg-blue-900 text-white' : member.role === 'Consultant' ? 'bg-purple-900 text-white' : 'bg-slate-200 text-slate-600'}`}>
+                    <span className={`text-[8px] font-black px-2 py-1 rounded-md uppercase tracking-widest ${
+                      member.role === 'Manager' ? 'bg-blue-900 text-white' : 
+                      member.role === 'Consultant' ? 'bg-purple-900 text-white' : 
+                      member.role === 'Partner Agent' ? 'bg-purple-600 text-white' : 
+                      'bg-slate-200 text-slate-600'
+                    }`}>
                       {member.role}
                     </span>
                     <span className="text-[8px] font-black text-blue-600 uppercase">
@@ -333,7 +350,6 @@ export default function Settings() {
                   </div>
                 </div>
                 
-                {/* UPDATED LAYOUT CARD LINKS: Pulls profile object parameters back up to layout forms */}
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <button 
                     onClick={() => {
