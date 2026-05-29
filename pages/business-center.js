@@ -10,9 +10,6 @@ export default function BusinessCenterPortal() {
   const [agentProfile, setAgentProfile] = useState({ id: null, name: '', email: '' })
   const [agentJobs, setAgentJobs] = useState([]) 
   
-  // Securely track the loaded key state to prevent 'undefined' popup passes
-  const [paystackKey, setPaystackKey] = useState('')
-
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
@@ -25,14 +22,6 @@ export default function BusinessCenterPortal() {
 
   useEffect(() => {
     initializeAgent()
-    
-    // Explicitly capture and commit the environment key to memory on browser mount
-    const liveKey = process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY?.trim()
-    if (liveKey) {
-      setPaystackKey(liveKey)
-    } else {
-      console.warn("⚠️ Paystack Public Key missing from environment parameters configuration.")
-    }
   }, [])
 
   const initializeAgent = async () => {
@@ -84,13 +73,6 @@ export default function BusinessCenterPortal() {
   const handlePaystackCheckout = async (e) => {
     e.preventDefault()
     if (!formData.service_id) return alert("Please select a valid service specification.")
-    
-    // FIXED: Dual-channel fallback configuration validation lookup strategy
-    const activeKey = paystackKey || process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY?.trim();
-
-    if (!activeKey) {
-      return alert("Application Configuration Error: Paystack API Verification Key not found. Please check Vercel environment variables.")
-    }
 
     const selectedService = services.find(s => String(s.id) === String(formData.service_id))
     const totalCost = Number(selectedService?.agent_price || 0)
@@ -100,11 +82,11 @@ export default function BusinessCenterPortal() {
 
     const uniqueTxRef = `OPL-B2B-${Date.now()}-${Math.floor(Math.random() * 1000)}`
 
-    // Configure Paystack Runtime Options Inline Popup referencing the safe verified key
+    // 🚀 FIXED: Hardcoded live public key cleanly to ensure seamless frontend execution
     const handler = window.PaystackPop.setup({
-      key: activeKey, 
+      key: "pk_live_6c84a94570e7c1202f5b3d17bfa8407240dda9b", 
       email: agentProfile.email,
-      amount: totalCost * 100, // Paystack reads raw amount metrics in kobo
+      amount: totalCost * 100, 
       currency: 'NGN',
       ref: uniqueTxRef,
       metadata: {
