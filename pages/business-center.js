@@ -82,6 +82,7 @@ export default function BusinessCenterPortal() {
 
     const uniqueTxRef = `OPL-FW-${Date.now()}-${Math.floor(Math.random() * 1000)}`
 
+    // INTEGRATION: Flutterwave Standard Inline Popup Framework
     window.FlutterwaveCheckout({
       public_key: "FLWPUBK-60fb76f86f6c5eb0e5e9b2339317a3b3-X", 
       tx_ref: uniqueTxRef,
@@ -110,18 +111,18 @@ export default function BusinessCenterPortal() {
       callback: async function (data) {
         if (data.status === "successful" || data.status === "completed") {
           try {
-            // 🚀 NEW: Explicitly insert the student into your Supabase database table
+            // 🚀 FIXED: Columns perfectly matched to database schema layout fields
             const { error } = await supabase
               .from('students')
               .insert([{
                 full_name: formData.name,
                 phone_number: formData.phone,
-                profile_code: formData.jambCode, // Map these according to your exact column titles
-                registration_number: formData.regNumber,
+                jamb_code: formData.jambCode,       // Matches verified schema key
+                reg_number: formData.regNumber,     // Matches verified schema key
                 service_id: formData.service_id,
                 agent_id: agentProfile.id,
                 amount_paid: totalCost,
-                status: 'Queue Wallet', // Matches your table styling default fallback status
+                status: 'Queue Wallet', 
                 registration_source: 'Business Center'
               }]);
 
@@ -132,10 +133,10 @@ export default function BusinessCenterPortal() {
               alert("Payment cleared & student profile logged successfully into Opolo ERP!");
             }
           } catch (dbErr) {
-            console.error("Supabase error wrapper catch:", dbErr);
+            console.error("Supabase write catch failure:", dbErr);
           }
 
-          // Reset client inputs & force refresh to clear layouts and pull the fresh student entry
+          // Reset client text values and refresh the viewport to render the new record
           setFormData({ name: '', phone: '', jambCode: '', regNumber: '', service_id: '' });
           window.location.reload();
         } else {
