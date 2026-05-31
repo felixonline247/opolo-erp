@@ -84,10 +84,9 @@ export default function BusinessCenterPortal() {
 
     // 🚀 INTEGRATION: Flutterwave Standard Inline Popup Framework
     window.FlutterwaveCheckout({
-      // Paste your live public key from the Flutterwave dashboard here
       public_key: "FLWPUBK-60fb76f86f6c5eb0e5e9b2339317a3b3-X", 
       tx_ref: uniqueTxRef,
-      amount: totalCost, // Flutterwave accepts standard Naira metrics (No need to multiply by 100)
+      amount: totalCost, 
       currency: "NGN",
       payment_options: "card, banktransfer, ussd",
       customer: {
@@ -107,18 +106,25 @@ export default function BusinessCenterPortal() {
       customizations: {
         title: "Opolo CBT Resort",
         description: `B2B Portal Payment for ${selectedService.service_name}`,
-        logo: "https://opolo-erp-zmcg.vercel.app/logo.png", // Replace with your logo path if available
+        logo: "https://opolo-erp-zmcg.vercel.app/logo.png", 
       },
       callback: function (data) {
-        // Triggers instantly when user completes payment processing card loops
+        // 🔥 UPDATED: Dynamic modal teardown and state synchronization sequence
         if (data.status === "successful" || data.status === "completed") {
           alert("Payment cleared via Flutterwave! Processing queue distribution layout...");
-          setFormData({ name: '', phone: '', jambCode: '', regNumber: '', service_id: '' })
-          fetchAgentQueue(agentProfile.id)
+          
+          // 1. Reset client intake form attributes completely
+          setFormData({ name: '', phone: '', jambCode: '', regNumber: '', service_id: '' });
+          
+          // 2. Fetch fresh queue data records instantly
+          fetchAgentQueue(agentProfile.id);
+          
+          // 3. Clear window layout stacks to dismiss remaining modal frames
+          window.location.reload();
         } else {
-          alert("Payment processing fallback. Transaction flagged or pending validation.")
+          alert("Payment processing fallback. Transaction flagged or pending validation.");
+          setProcessing(false);
         }
-        setProcessing(false);
       },
       onclose: function () {
         alert("Transaction window closed by agent. Request terminated.");
