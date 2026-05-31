@@ -82,7 +82,6 @@ export default function BusinessCenterPortal() {
 
     const uniqueTxRef = `OPL-FW-${Date.now()}-${Math.floor(Math.random() * 1000)}`
 
-    // 🚀 INTEGRATION: Flutterwave Standard Inline Popup Framework
     window.FlutterwaveCheckout({
       public_key: "FLWPUBK-60fb76f86f6c5eb0e5e9b2339317a3b3-X", 
       tx_ref: uniqueTxRef,
@@ -108,18 +107,36 @@ export default function BusinessCenterPortal() {
         description: `B2B Portal Payment for ${selectedService.service_name}`,
         logo: "https://opolo-erp-zmcg.vercel.app/logo.png", 
       },
-      callback: function (data) {
-        // 🔥 UPDATED: Dynamic modal teardown and state synchronization sequence
+      callback: async function (data) {
         if (data.status === "successful" || data.status === "completed") {
-          alert("Payment cleared via Flutterwave! Processing queue distribution layout...");
-          
-          // 1. Reset client intake form attributes completely
+          try {
+            // 🚀 NEW: Explicitly insert the student into your Supabase database table
+            const { error } = await supabase
+              .from('students')
+              .insert([{
+                full_name: formData.name,
+                phone_number: formData.phone,
+                profile_code: formData.jambCode, // Map these according to your exact column titles
+                registration_number: formData.regNumber,
+                service_id: formData.service_id,
+                agent_id: agentProfile.id,
+                amount_paid: totalCost,
+                status: 'Queue Wallet', // Matches your table styling default fallback status
+                registration_source: 'Business Center'
+              }]);
+
+            if (error) {
+              console.error("Database Save Error:", error);
+              alert(`Payment was successful, but failed to log to Database: ${error.message}`);
+            } else {
+              alert("Payment cleared & student profile logged successfully into Opolo ERP!");
+            }
+          } catch (dbErr) {
+            console.error("Supabase error wrapper catch:", dbErr);
+          }
+
+          // Reset client inputs & force refresh to clear layouts and pull the fresh student entry
           setFormData({ name: '', phone: '', jambCode: '', regNumber: '', service_id: '' });
-          
-          // 2. Fetch fresh queue data records instantly
-          fetchAgentQueue(agentProfile.id);
-          
-          // 3. Clear window layout stacks to dismiss remaining modal frames
           window.location.reload();
         } else {
           alert("Payment processing fallback. Transaction flagged or pending validation.");
