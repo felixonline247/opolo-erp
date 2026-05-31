@@ -70,7 +70,7 @@ export default function BusinessCenterPortal() {
     setAgentJobs(data || [])
   }
 
-  const handlePaystackCheckout = async (e) => {
+  const handleFlutterwaveCheckout = async (e) => {
     e.preventDefault()
     if (!formData.service_id) return alert("Please select a valid service specification.")
 
@@ -80,38 +80,51 @@ export default function BusinessCenterPortal() {
     if (totalCost <= 0) return alert("Pricing invalid or not preconfigured by Manager.")
     setProcessing(true)
 
-    const uniqueTxRef = `OPL-B2B-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+    const uniqueTxRef = `OPL-FW-${Date.now()}-${Math.floor(Math.random() * 1000)}`
 
-    // 🚀 FIXED: Absolute static hardcoded assignment maps to your verified 40-character key perfectly
-    const handler = window.PaystackPop.setup({
-      key: "pk_live_6c84a94570e7c1202f5b3d17bfa8407240dda9b", 
-      email: agentProfile.email,
-      amount: totalCost * 100, 
-      currency: 'NGN',
-      ref: uniqueTxRef,
-      metadata: {
-        custom_fields: [
-          { display_name: "Student Name", variable_name: "student_name", value: formData.name },
-          { display_name: "Phone Number", variable_name: "student_phone", value: formData.phone },
-          { display_name: "Profile Code", variable_name: "jamb_code", value: formData.jambCode },
-          { display_name: "Registration Number", variable_name: "reg_number", value: formData.regNumber },
-          { display_name: "Service ID", variable_name: "service_id", value: formData.service_id },
-          { display_name: "Agent ID", variable_name: "agent_id", value: agentProfile.id }
-        ]
+    // 🚀 INTEGRATION: Flutterwave Standard Inline Popup Framework
+    window.FlutterwaveCheckout({
+      // Paste your live public key from the Flutterwave dashboard here
+      public_key: "FLWPUBK-60fb76f86f6c5eb0e5e9b2339317a3b3-X", 
+      tx_ref: uniqueTxRef,
+      amount: totalCost, // Flutterwave accepts standard Naira metrics (No need to multiply by 100)
+      currency: "NGN",
+      payment_options: "card, banktransfer, ussd",
+      customer: {
+        email: agentProfile.email,
+        phone_number: formData.phone,
+        name: formData.name,
       },
-      callback: function(response) {
-        alert(`Payment clear! Transaction approved. Checking backend webhook tracking ledger...`);
-        setFormData({ name: '', phone: '', jambCode: '', regNumber: '', service_id: '' })
-        fetchAgentQueue(agentProfile.id)
-        setProcessing(false)
+      meta: {
+        student_name: formData.name,
+        student_phone: formData.phone,
+        jamb_code: formData.jambCode,
+        reg_number: formData.regNumber,
+        service_id: formData.service_id,
+        agent_id: agentProfile.id,
+        registration_source: 'Business Center'
       },
-      onClose: function() {
-        alert("Transaction canceled by agent. Entry dropped.");
-        setProcessing(false)
-      }
+      customizations: {
+        title: "Opolo CBT Resort",
+        description: `B2B Portal Payment for ${selectedService.service_name}`,
+        logo: "https://opolo-erp-zmcg.vercel.app/logo.png", // Replace with your logo path if available
+      },
+      callback: function (data) {
+        // Triggers instantly when user completes payment processing card loops
+        if (data.status === "successful" || data.status === "completed") {
+          alert("Payment cleared via Flutterwave! Processing queue distribution layout...");
+          setFormData({ name: '', phone: '', jambCode: '', regNumber: '', service_id: '' })
+          fetchAgentQueue(agentProfile.id)
+        } else {
+          alert("Payment processing fallback. Transaction flagged or pending validation.")
+        }
+        setProcessing(false);
+      },
+      onclose: function () {
+        alert("Transaction window closed by agent. Request terminated.");
+        setProcessing(false);
+      },
     });
-
-    handler.openIframe();
   }
 
   if (loading) return <div className="p-20 text-center font-black uppercase text-blue-900 animate-pulse">Loading Agent Portal...</div>
@@ -127,7 +140,7 @@ export default function BusinessCenterPortal() {
             <p className="text-[10px] font-bold text-purple-600 uppercase tracking-widest mt-1">Logged In: {agentProfile.name}</p>
           </div>
 
-          <form onSubmit={handlePaystackCheckout} className="space-y-4">
+          <form onSubmit={handleFlutterwaveCheckout} className="space-y-4">
             <div>
               <label className="block text-[10px] font-black text-blue-900 uppercase tracking-widest mb-1 ml-1">Requested Service</label>
               <select
@@ -169,7 +182,7 @@ export default function BusinessCenterPortal() {
               disabled={processing}
               className={`w-full py-4 px-4 rounded-xl text-white font-black uppercase tracking-wider text-xs transition-all shadow-lg ${processing ? 'bg-gray-400' : 'bg-purple-900 hover:bg-black'}`}
             >
-              {processing ? "Launching Paystack Checkout..." : "Secure Payment via Paystack"}
+              {processing ? "Launching Flutterwave Secure Gate..." : "Secure Payment via Flutterwave"}
             </button>
           </form>
         </div>
@@ -206,7 +219,7 @@ export default function BusinessCenterPortal() {
         </div>
 
       </div>
-      <script src="https://js.paystack.co/v1/inline.js" async></script>
+      <script src="https://checkout.flutterwave.com/v3.js" async></script>
     </div>
   )
 }
