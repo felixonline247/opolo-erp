@@ -31,7 +31,7 @@ export default function BusinessCenterPortal() {
 
       const { data: profile } = await supabase
         .from('profiles')
-        .select('id, full_name, email, role')
+        .select('id, full_name, role, email, role')
         .eq('id', session.user.id)
         .single()
 
@@ -115,12 +115,13 @@ export default function BusinessCenterPortal() {
       callback: async function (data) {
         if (data.status === "successful" || data.status === "completed") {
           try {
+            // 🚀 FIXED: Passes p_service_id straight as a UUID string expression parameter
             const { error } = await supabase.rpc('insert_business_center_student', {
               p_full_name: cleanName,
               p_phone_number: cleanPhone,
               p_jamb_code: cleanJambCode,
               p_reg_number: cleanRegNumber,
-              p_service_id: Number(formData.service_id),
+              p_service_id: formData.service_id, 
               p_agent_id: agentProfile.id,
               p_amount_paid: totalCost
             });
