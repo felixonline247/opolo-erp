@@ -82,7 +82,6 @@ export default function BusinessCenterPortal() {
 
     const uniqueTxRef = `OPL-FW-${Date.now()}-${Math.floor(Math.random() * 1000)}`
 
-    // Scrub data objects cleanly to enforce absolute validation before database RPC streams
     const cleanName = String(formData.name || '').trim();
     const cleanPhone = String(formData.phone || '').trim();
     const cleanJambCode = String(formData.jambCode || '').trim();
@@ -203,13 +202,12 @@ export default function BusinessCenterPortal() {
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Profile Code</label>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Profile Code (Optional)</label>
                 <input 
                   type="text" 
-                  required 
                   value={formData.jambCode} 
                   onChange={(e) => setFormData({...formData, jambCode: e.target.value})} 
-                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none" 
+                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none border-dashed border-slate-300 focus:border-solid focus:border-purple-500" 
                 />
               </div>
               <div>
@@ -233,7 +231,7 @@ export default function BusinessCenterPortal() {
           </form>
         </div>
 
-        {/* RIGHT COMPONENT: LIVE TRANSPARENCY AGENT QUEUE */}
+        {/* RIGHT COMPONENT: LIVE AGENT QUEUE */}
         <div className="lg:col-span-7 bg-white rounded-[2rem] border border-slate-200 shadow-sm overflow-hidden flex flex-col">
           <div className="p-6 bg-slate-900 text-white flex justify-between items-center">
             <h3 className="text-xs font-black uppercase tracking-widest">Your Sent Processing Queue Ledger</h3>
