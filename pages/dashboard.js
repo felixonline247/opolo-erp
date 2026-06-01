@@ -16,8 +16,9 @@ export default function Dashboard() {
   const [searchTerm, setSearchTerm] = useState('')
   const [filterDate, setFilterDate] = useState('today')
   const [isChatOpen, setIsChatOpen] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false)
   
-  // NEW: Bulletproof client-side hydration mount guard tracking flag
+  // Bulletproof client-side hydration mount guard tracking flag
   const [isMounted, setIsMounted] = useState(false)
   
   const router = useRouter()
@@ -77,8 +78,11 @@ export default function Dashboard() {
     `)
 
     // Role-based status filtering
-    if (role === 'Account Officer' || role === 'Account') {
-      query = query.eq('status', 'Awaiting Payment')
+    if (role === 'Front Desk') {
+      // Front Desk tracks both online prepaid queues and freshly registered local walk-ins
+      query = query.in('status', ['Queue Wallet', 'Awaiting Payment'])
+    } else if (role === 'Account Officer' || role === 'Account') {
+      query = query.in('status', ['Pending', 'Awaiting Payment'])
     } else if (role === 'Service Staff') {
       query = query.eq('status', 'Awaiting Service')
     }
@@ -97,6 +101,29 @@ export default function Dashboard() {
 
   // --- ACTIONS ---
 
+  const handleTransferToAccount = async (student) => {
+    if (isProcessing) return
+    const isConfirmed = window.confirm(`Confirm operational release and transfer ${student.full_name} to Account inbox?`)
+    if (!isConfirmed) return
+
+    setIsProcessing(true)
+    const { error } = await supabase
+      .from('students')
+      .update({ 
+        status: 'Pending',
+        front_desk_officer_email: userEmail
+      })
+      .eq('id', student.id)
+    
+    setIsProcessing(false)
+    if (!error) {
+      await logActivity("Handoff", `Transferred Business Center student ${student.full_name} to Accounts queue`);
+      fetchData(userRole);
+    } else {
+      alert("Handoff error: " + error.message)
+    }
+  }
+
   const handleConfirmPayment = async (student, method) => {
     const { error } = await supabase
       .from('students')
@@ -109,7 +136,7 @@ export default function Dashboard() {
       .eq('id', student.id)
     
     if (!error) {
-      await logActivity("Payment", `Confirmed ${method} payment for ${student.full_name}`);
+      await logActivity("Payment", `Confirmed ${method} payment for walk-in: ${student.full_name}`);
       fetchData(userRole);
     }
   }
@@ -257,6 +284,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           {(userRole === 'Front Desk' || userRole === 'Manager' || userRole === 'Admin') && (
             <div className="lg:col-span-4">
+               {/* Initial state configuration maps directly to "Awaiting Payment" via answers validation flow */}
                <RegistrationForm services={services} onSelect={() => fetchData(userRole)} />
             </div>
           )}
@@ -297,7 +325,9 @@ export default function Dashboard() {
                               </span>
                             ) : student.assigned_consultant_id ? (
                               <span className="bg-purple-100 text-purple-700 text-[8px] font-black uppercase px-2 py-0.5 rounded">VIP</span>
-                            ) : null}
+                            ) : (
+                              <span className="bg-blue-100 text-blue-800 text-[8px] font-black uppercase px-2 py-0.5 rounded">🚶 Walk-In</span>
+                            )}
                           </div>
                           <div className="text-[10px] text-slate-400 font-bold mt-0.5 uppercase">
                             STATUS: <span className={student.status === 'Completed' ? "text-green-600" : "text-blue-600"}>{student.status}</span>
@@ -305,41 +335,27 @@ export default function Dashboard() {
                         </td>
                         <td className="p-5">
                           <div className="text-xs font-bold text-slate-700">{student.services?.service_name || 'General Service'}</div>
-                          {/* FIXED: Removed the invalid "key =" evaluation template typo statement */}
                           <div className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">₦{Number(student.amount_paid || student.services?.price || 0).toLocaleString()} • {student.payment_method || 'Unpaid'}</div>
                         </td>
                         <td className="p-5 text-right">
-                          {(userRole === 'Account Officer' || userRole === 'Account') && student.status === 'Awaiting Payment' && (
-                            <div className="flex gap-2 justify-end">
-                              {student.registration_source === 'Business Center' ? (
-                                <button
-                                  onClick={async () => {
-                                    if (!confirm(`Verify cash transaction parameters and approve operational release to Service Staff queue for ${student.full_name}?`)) return
-                                    const { error } = await supabase
-                                      .from('students')
-                                      .update({
-                                        status: 'Awaiting Service',
-                                        account_officer_email: userEmail,
-                                        payment_confirmed_at: new Date().toISOString()
-                                      })
-                                      .eq('id', student.id)
+                          {userRole === 'Front Desk' && student.status === 'Queue Wallet' && (
+                            <button 
+                              disabled={isProcessing}
+                              onClick={() => handleTransferToAccount(student)}
+                              className="bg-blue-900 hover:bg-black text-white px-5 py-2 rounded-xl text-[10px] font-black shadow-md uppercase tracking-wider transition-all"
+                            >
+                              Transfer to Account
+                            </button>
+                          )}
 
-                                    if (!error) {
-                                      await logActivity("B2B Verification", `Approved cash parameters for Business Center entry: ${student.full_name}`);
-                                      fetchData(userRole);
-                                    }
-                                  }}
-                                  className="bg-purple-900 hover:bg-black text-white px-5 py-2 rounded-xl text-[10px] font-black shadow-md uppercase tracking-wider transition-all"
-                                >
-                                  Approve Release
-                                </button>
-                              ) : (
-                                <>
-                                  <button onClick={() => handleConfirmPayment(student, 'Cash')} className="bg-green-600 text-white px-3 py-2 rounded-lg text-[10px] font-black shadow-sm uppercase">CASH</button>
-                                  <button onClick={() => handleConfirmPayment(student, 'Transfer')} className="bg-blue-600 text-white px-3 py-2 rounded-lg text-[10px] font-black shadow-sm uppercase">TRANS</button>
-                                </>
-                              )}
-                            </div>
+                          {userRole === 'Front Desk' && student.status === 'Awaiting Payment' && (
+                            <span className="text-blue-600 font-black text-[10px] bg-blue-50 px-4 py-2 rounded-xl border border-blue-100 uppercase italic tracking-wider">
+                              Sent to Cashier
+                            </span>
+                          )}
+
+                          {(userRole === 'Account Officer' || userRole === 'Account') && (student.status === 'Awaiting Payment' || student.status === 'Pending') && (
+                            <div className="text-xs text-slate-400 font-black italic">Manage via Accounts Portal</div>
                           )}
 
                           {userRole === 'Service Staff' && student.status === 'Awaiting Service' && (

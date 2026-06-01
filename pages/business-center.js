@@ -229,9 +229,17 @@ export default function BusinessCenterPortal() {
                   <span className={`text-[9px] font-black px-4 py-1.5 rounded-full uppercase tracking-widest border ${
                     job.status === 'Completed' ? 'bg-green-50 text-green-600 border-green-200' :
                     job.status === 'Started' ? 'bg-amber-50 text-amber-600 border-amber-200' :
-                    'bg-blue-50 text-blue-600 border-blue-200'
+                    job.status === 'Pending' ? 'bg-blue-50 text-blue-600 border-blue-200 bg-blue-50/40' :
+                    job.status === 'Awaiting Service' ? 'bg-indigo-50 text-indigo-600 border-indigo-200' :
+                    'bg-slate-100 text-slate-600 border-slate-200'
                   }`}>
-                    {job.status === 'Completed' ? '✅ Finished' : job.status === 'Started' ? '⚡ Processing' : '⏳ Queue Wallet'}
+                    {
+                      job.status === 'Completed' ? '✅ Finished' : 
+                      job.status === 'Started' ? '⚡ Processing' : 
+                      job.status === 'Pending' ? '🏢 Front Desk Verified' :
+                      job.status === 'Awaiting Service' ? '💳 Accounts Cleared' :
+                      '⏳ Queue Wallet'
+                    }
                   </span>
                 </div>
               </div>

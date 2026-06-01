@@ -34,7 +34,7 @@ export default function AccountsDashboard() {
   })
   const router = useRouter()
 
-  // FIXED: Pulls visibility rules directly from the global master key set by the Manager
+  // Pulls visibility rules directly from the global master key set by the Manager
   useEffect(() => {
     const cachedVisibility = localStorage.getItem('opolo_master_visibility')
     if (cachedVisibility) {
@@ -60,7 +60,7 @@ export default function AccountsDashboard() {
     }
   }, [timeframe, customDates, userProfile.id])
 
-  // FIXED: Syncs live manual adjustments to the shared storage space
+  // Syncs live manual adjustments to the shared storage space
   const toggleVisibilitySetting = (key) => {
     const updatedVisibility = { ...visibility, [key]: !visibility[key] }
     setVisibility(updatedVisibility)
@@ -123,6 +123,7 @@ export default function AccountsDashboard() {
 
   const fetchPendingData = async () => {
     try {
+      // Pulls both incoming streams side-by-side inside your collection grid
       const { data, error } = await supabase
         .from('students')
         .select(`
@@ -131,12 +132,13 @@ export default function AccountsDashboard() {
           amount_paid, 
           institution_cost, 
           created_at, 
+          status,
           assigned_consultant_id,
           registration_source,
           consultant:profiles!students_assigned_consultant_id_fkey(full_name),
           services (service_name)
         `)
-        .eq('status', 'Awaiting Payment') 
+        .in('status', ['Pending', 'Awaiting Payment']) 
         .eq('is_deleted', false)
         .order('created_at', { ascending: true })
 
@@ -199,13 +201,14 @@ export default function AccountsDashboard() {
     setCustomPrices(prev => ({ ...prev, [id]: newPrice }))
   }
 
-  const confirmPayment = async (studentId, method) => {
+  // Action Pathway 1: Processing physical money from Walk-In clients
+  const confirmPaymentAndTransfer = async (studentId, method) => {
     if (isProcessing) return;
     
     const student = pendingStudents.find(s => s.id === studentId);
     const finalAmount = customPrices[studentId] !== undefined ? Number(customPrices[studentId]) : Number(student.amount_paid);
 
-    const isConfirmed = window.confirm(`Confirm ${method} payment of ₦${finalAmount.toLocaleString()}?`);
+    const isConfirmed = window.confirm(`Confirm ${method} payment of ₦${finalAmount.toLocaleString()} for walk-in client and release to service?`);
     if (!isConfirmed) return;
 
     setIsProcessing(true);
@@ -234,11 +237,12 @@ export default function AccountsDashboard() {
     }
   }
 
-  const handleBusinessCenterApproval = async (studentId) => {
+  // Action Pathway 2: Validating digital Flutterwave parameters from Business Centers
+  const handleBusinessCenterRelease = async (studentId) => {
     if (isProcessing) return;
     const student = pendingStudents.find(s => s.id === studentId);
     
-    const verify = window.confirm(`Verify cash parameters and authorize release to Service Queue for ${student.full_name}?`);
+    const verify = window.confirm(`Authorize release to Service Staff workflow for prepaid Business Center entry: ${student.full_name}?`);
     if (!verify) return;
 
     setIsProcessing(true);
@@ -256,7 +260,6 @@ export default function AccountsDashboard() {
 
       setPendingStudents(prev => prev.filter(s => s.id !== studentId));
       await fetchFinanceStats();
-      alert("B2B Parameters verified. Student released to operations workflow queue.");
     } catch (err) {
       alert("Approval Error: " + err.message);
     } finally {
@@ -302,7 +305,7 @@ export default function AccountsDashboard() {
           </div>
         </header>
 
-        {/* METRICS TOGGLES ROW (Shows for Managers/Admins visiting the Accounts page) */}
+        {/* METRICS TOGGLES ROW */}
         {(userProfile.role === 'Manager' || userProfile.role === 'Admin') && (
           <div className="mb-8 p-4 bg-white border border-slate-200 rounded-[1.5rem] shadow-sm flex flex-wrap gap-4 items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-2">Metrics Control switches:</span>
@@ -409,15 +412,19 @@ export default function AccountsDashboard() {
                 <div className="flex-1">
                   <div className="flex flex-wrap items-center gap-3">
                     <p className="font-black text-blue-950 uppercase text-2xl tracking-tighter">{student.full_name}</p>
-                    {student.registration_source === 'Business Center' ? (
+                    {student.status === 'Pending' ? (
                       <span className="bg-purple-900 text-white text-[8px] font-black uppercase px-3 py-1 rounded-md tracking-wider border border-purple-950">
-                        🏢 Business-Centre
+                        🏢 Business-Centre (Prepaid)
                       </span>
                     ) : student.assigned_consultant_id ? (
                       <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest shadow-sm">
-                        ⭐ VIP: {student.consultant?.full_name}
+                        ⭐ VIP Walk-In: {student.consultant?.full_name}
                       </span>
-                    ) : null}
+                    ) : (
+                      <span className="bg-blue-100 text-blue-900 text-[8px] font-black uppercase px-3 py-1 rounded-md tracking-wider border border-blue-200">
+                        🚶 Local Walk-In
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-3 mt-2">
                     <span className="bg-blue-100 text-blue-600 text-[9px] font-black px-3 py-1 rounded-full uppercase">{student.services?.service_name}</span>
@@ -428,7 +435,7 @@ export default function AccountsDashboard() {
                 <div className="flex flex-col items-end gap-4 w-full md:w-auto">
                   <div className="text-right flex flex-col items-end">
                     <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Due</p>
-                    {student.assigned_consultant_id && student.registration_source !== 'Business Center' ? (
+                    {student.assigned_consultant_id && student.status !== 'Pending' ? (
                       <div className="relative">
                         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-purple-900 font-black">₦</span>
                         <input 
@@ -444,21 +451,21 @@ export default function AccountsDashboard() {
                   </div>
                     
                   <div className="flex gap-2 w-full md:w-auto">
-                    {student.registration_source === 'Business Center' ? (
+                    {student.status === 'Pending' ? (
                       <button
                         disabled={isProcessing}
-                        onClick={() => handleBusinessCenterApproval(student.id)}
+                        onClick={() => handleBusinessCenterRelease(student.id)}
                         className="w-full md:w-auto px-10 py-4 bg-purple-900 hover:bg-black text-white text-[10px] font-black rounded-2xl transition-all uppercase tracking-widest shadow-md"
                       >
-                        {isProcessing ? "Processing..." : "Approve Release"}
+                        {isProcessing ? "Processing..." : "Transfer to Service Staff"}
                       </button>
                     ) : (
                       ['Cash', 'Transfer', 'POS'].map(method => (
                         <button
                           key={method}
                           disabled={isProcessing}
-                          onClick={() => confirmPayment(student.id, method)}
-                          className="flex-1 md:flex-none px-8 py-4 bg-white border-2 border-slate-100 text-slate-900 text-[10px] font-black rounded-2xl hover:border-blue-900 hover:bg-blue-900 hover:text-white transition-all uppercase tracking-widest"
+                          onClick={() => confirmPaymentAndTransfer(student.id, method)}
+                          className="flex-1 md:flex-none px-6 py-4 bg-white border-2 border-slate-100 text-slate-900 text-[10px] font-black rounded-2xl hover:border-blue-900 hover:bg-blue-900 hover:text-white transition-all uppercase tracking-widest"
                         >
                           {method}
                         </button>
