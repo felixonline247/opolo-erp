@@ -15,11 +15,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [filterDate, setFilterDate] = useState('today')
-  const [filterTimeSlot, setFilterTimeSlot] = useState('all') // NEW: Time Range Filter State
   const [isChatOpen, setIsChatOpen] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
-  
-  // Bulletproof client-side hydration mount guard tracking flag
   const [isMounted, setIsMounted] = useState(false)
   
   const router = useRouter()
@@ -37,60 +34,99 @@ export default function Dashboard() {
       
       setUserEmail(session.user.email)
       
-      const { data: profile } = await supabase
+      const { data: profile, error } = await supabase
         .from('profiles')
         .select('id, full_name, role, email, commission_type, commission_value')
         .eq('id', session.user.id)
         .single()
       
-      const role = profile?.role || 'Front Desk'
+      if (error || !profile) {
+        console.error("Profile check failed:", error)
+        return router.push('/')
+      }
+
+      const role = profile.role || 'Front Desk'
       
       if (role === 'Partner Agent') {
         return router.push('/business-center')
       }
 
-      setUserRole(role)
-      setUserProfile({
-        id: session.user.id,
-        name: profile?.full_name || 'Staff Member',
-        email: profile?.email || session.user.email,
-        commission_type: profile?.commission_type || 'fixed',
-        commission_value: Number(profile?.commission_value || 0)
-      })
-      fetchData(role)
+      // 🚀 FIXED SILENT GATE: Smoothly redirects Supervisors to /service instantly with no intrusive alert popup
+      if (role === 'Supervisor') {
+        return router.push('/service')
+      }
+
+      if (['Front Desk', 'Account Officer', 'Account', 'Manager', 'Admin', 'Service Staff'].includes(role)) {
+        setUserRole(role)
+        setUserProfile({
+          id: session.user.id,
+          name: profile.full_name || 'Staff Member',
+          email: profile.email || session.user.email,
+          commission_type: profile.commission_type || 'fixed',
+          commission_value: Number(profile.commission_value || 0)
+        })
+        fetchData(role)
+      } else {
+        return router.push('/')
+      }
     }
-    setup()
-  }, [])
+    
+    if (isMounted) {
+      setup()
+    }
+  }, [isMounted])
 
   const fetchData = async (role) => {
     setLoading(true)
+    
     const { data: srv } = await supabase.from('services').select('*')
     setServices(srv || [])
 
-    let query = supabase.from('students').select(`
-      *, 
-      services(service_name, price, commission_type, commission_value)
-    `)
+    let allRecords = []
+    let keepFetching = true
+    let fromOffset = 0
+    const chunkSize = 1000 
 
-    // Role-based status filtering
-    if (role === 'Front Desk') {
-      // 🚀 FIXED: Front Desk now bypasses strict column filtering to see EVERY single student row record
-      // No constraint added here so all statuses pull down seamlessly
-    } else if (role === 'Account Officer' || role === 'Account') {
-      query = query.in('status', ['Pending', 'Awaiting Payment'])
-    } else if (role === 'Service Staff') {
-      query = query.eq('status', 'Awaiting Service')
+    while (keepFetching) {
+      let query = supabase
+        .from('students')
+        .select(`
+          *, 
+          services(service_name, price, institution_cost, commission_type, commission_value)
+        `)
+        .eq('is_deleted', false)
+        .order('created_at', { ascending: false })
+        .range(fromOffset, fromOffset + chunkSize - 1)
+
+      if (role === 'Front Desk') {
+        // Keeps front desk multi-ledger streaming functional
+      } else if (role === 'Account Officer' || role === 'Account') {
+        query = query.in('status', ['Pending', 'Awaiting Payment'])
+      } else if (role === 'Service Staff') {
+        query = query.eq('status', 'Awaiting Service')
+      }
+
+      const { data, error } = await query
+      
+      if (error) {
+        console.error("Supabase Chunk Fetch Error:", error)
+        keepFetching = false
+        break
+      }
+
+      if (data && data.length > 0) {
+        allRecords = [...allRecords, ...data]
+        if (data.length < chunkSize) {
+          keepFetching = false 
+        } else {
+          fromOffset += chunkSize 
+        }
+      } else {
+        keepFetching = false
+      }
     }
 
-    const { data: stus, error } = await query
-      .eq('is_deleted', false)
-      .order('created_at', { ascending: false })
-    
-    if (!error) {
-      setStudents(stus)
-    } else {
-      console.error("Supabase Fetch Error:", error)
-    }
+    setStudents(allRecords)
     setLoading(false)
   }
 
@@ -199,7 +235,7 @@ export default function Dashboard() {
       .eq('id', student.id)
     
     if (!error) {
-      await logActivity("Service", `Completed service for ${student.full_name}. Staff Commission: ₦${calculatedComm}`);
+      await logActivity("Service", `Completed service for ${student.full_name}. Commission: ₦${calculatedComm}`);
       fetchData(userRole)
       try { 
         await sendCompletionSMS(student.phone_number, student.full_name); 
@@ -209,7 +245,6 @@ export default function Dashboard() {
     }
   }
 
-  // Filter Logic (Date, Search, and Time slot ranges)
   const filteredStudents = students.filter(student => {
     const searchStr = searchTerm.toLowerCase();
     const matchesSearch = (
@@ -218,28 +253,19 @@ export default function Dashboard() {
       student.jamb_profile_code?.toLowerCase().includes(searchStr)
     );
 
-    // 1. Date filter block evaluation
-    let matchesDate = true;
-    if (filterDate === 'today') {
-      const today = new Date().toISOString().split('T')[0];
-      const studentDate = new Date(student.created_at).toISOString().split('T')[0];
-      matchesDate = (studentDate === today);
-    }
-
-    // 2. NEW: Time Range hourly slice parameters filter evaluation block
-    let matchesTime = true;
-    if (filterTimeSlot !== 'all') {
-      const studentHour = new Date(student.created_at).getHours();
-      if (filterTimeSlot === 'morning') {
-        matchesTime = (studentHour >= 6 && studentHour < 12); // 6:00 AM - 11:59 AM
-      } else if (filterTimeSlot === 'afternoon') {
-        matchesTime = (studentHour >= 12 && studentHour < 17); // 12:00 PM - 4:59 PM
-      } else if (filterTimeSlot === 'evening') {
-        matchesTime = (studentHour >= 17 && studentHour <= 23); // 5:00 PM - 11:59 PM
+    let matchesRoleQueue = true;
+    if (userRole === 'Front Desk') {
+      if (filterDate === 'today') {
+        // Today view parameters
+      } else {
+        matchesRoleQueue = ['Queue Wallet', 'Awaiting Payment', 'Pending', 'Awaiting Service', 'Started', 'Completed'].includes(student.status);
       }
     }
 
-    return matchesSearch && matchesDate && matchesTime;
+    if (filterDate === 'all') return matchesSearch && matchesRoleQueue;
+    const today = new Date().toISOString().split('T')[0];
+    const studentDate = new Date(student.created_at).toISOString().split('T')[0];
+    return matchesSearch && (studentDate === today) && matchesRoleQueue;
   })
 
   const indexOfLastItem = currentPage * itemsPerPage;
@@ -264,8 +290,7 @@ export default function Dashboard() {
             </p>
           </div>
           <button 
-            onClick={async () => {
-              await logActivity("Logout", "Staff manually signed out");
+            onClick={() => {
               supabase.auth.signOut().then(() => router.push('/'));
             }} 
             className="text-xs font-black text-red-500 hover:bg-red-50 px-4 py-2 rounded-xl border border-red-100 transition"
@@ -311,30 +336,13 @@ export default function Dashboard() {
           <div className={(userRole === 'Front Desk' || userRole === 'Manager' || userRole === 'Admin') ? "lg:col-span-8" : "lg:col-span-12"}>
             <div className="bg-white shadow-xl rounded-2xl overflow-hidden border border-gray-100">
               <div className="p-4 bg-slate-50 border-b flex flex-col md:flex-row justify-between items-center gap-4">
-                
-                {/* DATE ATOMIC SWITCH TOGGLES */}
                 <div className="flex bg-gray-200 p-1 rounded-xl">
                   <button onClick={() => {setFilterDate('today'); setCurrentPage(1)}} className={`px-4 py-1.5 rounded-lg text-[10px] font-black transition ${filterDate === 'today' ? 'bg-white text-blue-900 shadow-sm' : 'text-gray-500'}`}>TODAY</button>
                   <button onClick={() => {setFilterDate('all'); setCurrentPage(1)}} className={`px-4 py-1.5 rounded-lg text-[10px] font-black transition ${filterDate === 'all' ? 'bg-white text-blue-900 shadow-sm' : 'text-gray-500'}`}>ALL RECORDS</button>
                 </div>
-
-                {/* NEW: TIME RANGE HOUR SLOT SELECTOR DROPDOWN */}
-                <div className="w-full md:w-auto">
-                  <select
-                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-[10px] font-black uppercase tracking-widest outline-none text-blue-950 focus:ring-2 focus:ring-blue-500"
-                    value={filterTimeSlot}
-                    onChange={(e) => {setFilterTimeSlot(e.target.value); setCurrentPage(1)}}
-                  >
-                    <option value="all">⏰ All Hours Slot</option>
-                    <option value="morning">🌅 Morning (6am - 12pm)</option>
-                    <option value="afternoon">☀️ Afternoon (12pm - 5pm)</option>
-                    <option value="evening">🌌 Evening (5pm - 12am)</option>
-                  </select>
-                </div>
-
                 <input 
                   type="text" placeholder="Search student name..."
-                  className="block w-full md:w-48 px-4 py-2 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                  className="block w-full md:w-64 px-4 py-2 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                   value={searchTerm} onChange={(e) => {setSearchTerm(e.target.value); setCurrentPage(1)}}
                 />
               </div>
@@ -366,11 +374,7 @@ export default function Dashboard() {
                             )}
                           </div>
                           <div className="text-[10px] text-slate-400 font-bold mt-0.5 uppercase">
-                            STATUS: <span className={`font-black ${
-                              student.status === 'Completed' ? 'text-green-600' : 
-                              student.status === 'Awaiting Service' ? 'text-purple-600 animate-pulse' : 
-                              student.status === 'Pending' ? 'text-amber-500' : 'text-blue-600'
-                            }`}>{student.status}</span>
+                            STATUS: <span className={student.status === 'Completed' ? "text-green-600 font-black" : "text-blue-600 font-black"}>{student.status}</span>
                           </div>
                         </td>
                         <td className="p-5">
@@ -378,8 +382,7 @@ export default function Dashboard() {
                           <div className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">₦{Number(student.amount_paid || student.services?.price || 0).toLocaleString()} • {student.payment_method || 'Unpaid'}</div>
                         </td>
                         <td className="p-5 text-right">
-                          {/* 🚀 FIXED LOGIC LAYER: Actions open contextually without hiding records down when statuses mutate */}
-                          {userRole === 'Front Desk' && student.status === 'Queue Wallet' && (
+                          {student.status === 'Queue Wallet' && (
                             <button 
                               disabled={isProcessing}
                               onClick={() => handleTransferToAccount(student)}
@@ -389,26 +392,26 @@ export default function Dashboard() {
                             </button>
                           )}
 
-                          {userRole === 'Front Desk' && student.status === 'Awaiting Payment' && (
-                            <span className="text-amber-600 font-black text-[10px] bg-amber-50 px-3 py-1 rounded-full border border-amber-100 uppercase tracking-wider">
+                          {student.status === 'Awaiting Payment' && (
+                            <span className="text-blue-600 font-black text-[10px] bg-blue-50 px-3 py-1.5 rounded-full border border-blue-100 uppercase tracking-wider font-sans not-italic">
                               ⏳ Awaiting Cashier
                             </span>
                           )}
 
-                          {userRole === 'Front Desk' && student.status === 'Pending' && (
-                            <span className="text-purple-600 font-black text-[10px] bg-purple-50 px-3 py-1 rounded-full border border-purple-100 uppercase tracking-wider">
+                          {student.status === 'Pending' && (
+                            <span className="text-amber-600 font-black text-[10px] bg-amber-50 px-3 py-1.5 rounded-full border border-amber-100 uppercase tracking-wider font-sans not-italic">
                               💳 Verifying Payment
                             </span>
                           )}
 
-                          {userRole === 'Front Desk' && student.status === 'Awaiting Service' && (
-                            <span className="text-indigo-600 font-black text-[10px] bg-indigo-50 px-3 py-1 rounded-full border border-indigo-100 uppercase tracking-wider animate-pulse">
+                          {student.status === 'Awaiting Service' && (
+                            <span className="text-purple-600 font-black text-[10px] bg-purple-50 px-3 py-1.5 rounded-full border border-purple-100 uppercase tracking-wider font-sans not-italic animate-pulse">
                               ⚡ In Operations Queue
                             </span>
                           )}
 
-                          {userRole === 'Front Desk' && student.status === 'Started' && (
-                            <span className="text-blue-600 font-black text-[10px] bg-blue-50 px-3 py-1 rounded-full border border-blue-100 uppercase tracking-wider">
+                          {student.status === 'Started' && (
+                            <span className="text-indigo-600 font-black text-[10px] bg-indigo-50 px-3 py-1.5 rounded-full border border-indigo-100 uppercase tracking-wider font-sans not-italic">
                               👨‍💻 Processing
                             </span>
                           )}

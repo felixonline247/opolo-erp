@@ -8,7 +8,7 @@ export default function StaffActivityLog() {
   const [jobs, setJobs] = useState([]);
   const [filterDate, setFilterDate] = useState('');
 
-  // 1. Authenticate and verify Service Staff Role
+  // 1. Authenticate and verify Role Clearance
   useEffect(() => {
     const checkAuth = async () => {
       const { data: { user: authUser }, error } = await supabase.auth.getUser();
@@ -25,10 +25,10 @@ export default function StaffActivityLog() {
         .eq('id', authUser.id)
         .single();
 
-      // Allowed Roles matching your exact database schema
-      const allowedRoles = ['Staff', 'Service Staff', 'Manager', 'Admin', 'Account'];
+      // 🚀 UPDATED ACCESS GATE: Added 'Supervisor' to authorize full performance history auditing
+      const allowedRoles = ['Staff', 'Service Staff', 'Manager', 'Admin', 'Account', 'Supervisor'];
       if (profileError || !allowedRoles.includes(profile?.role)) {
-        window.location.href = '/unauthorized';
+        window.location.href = '/dashboard';
         return;
       }
 
@@ -43,7 +43,6 @@ export default function StaffActivityLog() {
   const fetchJobs = async (userId, dateStr) => {
     setLoading(true);
     try {
-      // Added staff_commission to the select query
       let query = supabase
         .from('students')
         .select(`
@@ -61,7 +60,6 @@ export default function StaffActivityLog() {
             commission_value
           )
         `)
-        // Filter tasks started OR completed by this specific staff member
         .or(`started_by.eq.${userId},completed_by.eq.${userId}`)
         .in('status', ['Started', 'Completed'])
         .order('completed_at', { ascending: false });

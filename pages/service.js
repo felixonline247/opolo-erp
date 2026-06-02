@@ -10,12 +10,11 @@ export default function ServiceQueue() {
   const [userProfile, setUserProfile] = useState({ name: '', email: '', id: null, role: '', balance: 0, commission_type: 'fixed', commission_value: 0 })
   const [pendingQueue, setPendingQueue] = useState([]) 
   const [activeJobs, setActiveJobs] = useState([])     
-  const [supervisorView, setSupervisorView] = useState([]) 
   const [stats, setStats] = useState({ completed: 0, commission: 0 })
   
   const [filterMode, setFilterMode] = useState('today') 
   const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0])
-  const [queueSearch, setQueueSearch] = useState('') // NEW: Search keyword state tracking
+  const [queueSearch, setQueueSearch] = useState('') 
 
   const router = useRouter()
 
@@ -23,7 +22,6 @@ export default function ServiceQueue() {
     checkServiceAccess()
   }, [])
 
-  // NEW: Setup real-time pipeline to keep queue entries live without refreshing browser
   useEffect(() => {
     if (!userProfile.id) return
 
@@ -58,7 +56,7 @@ export default function ServiceQueue() {
 
       if (error) throw error
 
-      const allowedRoles = ['Staff', 'Service Staff', 'Manager', 'Admin', 'Account', 'Consultant'];
+      const allowedRoles = ['Staff', 'Service Staff', 'Manager', 'Admin', 'Account', 'Consultant', 'Supervisor'];
       if (!allowedRoles.includes(profile?.role)) {
         router.push('/dashboard')
       } else {
@@ -81,7 +79,6 @@ export default function ServiceQueue() {
 
   const fetchQueueAndStats = async (sId) => {
     try {
-      // UPDATED: Now queries ONLY 'Awaiting Service' status for general pending visibility
       const { data: pendingData } = await supabase
         .from('students')
         .select(`id, full_name, phone_number, status, jamb_profile_code, assigned_consultant_id, consultant:profiles!students_assigned_consultant_id_fkey(full_name, vip_auth_code), services(service_name)`)
@@ -94,14 +91,6 @@ export default function ServiceQueue() {
         .select(`id, full_name, phone_number, assigned_consultant_id, consultant:profiles!students_assigned_consultant_id_fkey(full_name), services(service_name)`)
         .eq('status', 'Started')
         .eq('started_by', sId)
-
-      if (['Manager', 'Admin', 'Account'].includes(userProfile.role)) {
-        const { data: monitoring } = await supabase
-          .from('students')
-          .select(`id, full_name, profiles!students_started_by_fkey(full_name)`)
-          .eq('status', 'Started')
-        setSupervisorView(monitoring || [])
-      }
 
       let query = supabase
         .from('students')
@@ -130,7 +119,6 @@ export default function ServiceQueue() {
 
   const startJob = async (id) => {
     try {
-      // NEW: Direct Database Verification check to avoid duplicate claims due to laggy clicking
       const { data: realTimeCheck, error: checkError } = await supabase
         .from('students')
         .select('status, full_name')
@@ -251,7 +239,6 @@ export default function ServiceQueue() {
     router.push('/')
   }
 
-  // NEW: Search Input query parsing layer
   const filteredQueue = pendingQueue.filter(student => {
     const searchWord = queueSearch.toLowerCase().trim();
     if (!searchWord) return true;
@@ -278,6 +265,21 @@ export default function ServiceQueue() {
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em]">{userProfile.name} • {userProfile.role}</p>
           </div>
           <div className="flex items-center gap-3">
+            {/* 🚀 SUPERVISOR ACTION BUTTONS BLOCK */}
+            {['Manager', 'Admin', 'Account', 'Supervisor'].includes(userProfile.role) && (
+              <Link href="/supervision-inbox">
+                <span className="px-5 py-2 border-2 border-amber-950 bg-amber-500 text-blue-950 rounded-full text-[10px] font-black uppercase tracking-wider cursor-pointer hover:bg-black hover:text-white transition-all shadow-[2px_2px_0px_0px_rgba(26,54,93,1)]">
+                  👁️ Supervision Inbox
+                </span>
+              </Link>
+            )}
+            {userProfile.role === 'Supervisor' && (
+              <Link href="/pending-jobs">
+                <span className="px-5 py-2 border-2 border-purple-950 bg-purple-900 text-white rounded-full text-[10px] font-black uppercase tracking-wider cursor-pointer hover:bg-black transition-all shadow-[2px_2px_0px_0px_rgba(26,54,93,1)]">
+                  ⚙️ Pending Jobs Panel
+                </span>
+              </Link>
+            )}
             <Link href="/activity-log">
               <span className="px-5 py-2 border-2 border-blue-950 bg-white text-blue-950 rounded-full text-[10px] font-black uppercase tracking-wider cursor-pointer hover:bg-slate-100 shadow-[2px_2px_0px_0px_rgba(26,54,93,1)] transition-all">
                 📜 Activity Log
@@ -330,20 +332,7 @@ export default function ServiceQueue() {
           </Link>
         </div>
 
-        {/* MONITORING / SUPERVISOR ACTIVE MODULE DISPLAY */}
-        {supervisorView.length > 0 && (
-          <div className="mb-10 p-8 bg-amber-50 border-4 border-amber-500 rounded-[2.5rem] shadow-[4px_4px_0px_0px_rgba(245,158,11,1)] animate-in fade-in-50 duration-300">
-            <h3 className="text-xs font-black uppercase tracking-[0.2em] text-amber-800 mb-4 flex items-center gap-2">⚠️ Management Supervision Inbox</h3>
-            <div className="grid gap-2">
-              {supervisorView.map((job) => (
-                <div key={job.id} className="text-xs font-bold text-amber-950 bg-white/60 p-3 rounded-xl border border-amber-200 flex justify-between items-center">
-                  <span>Student: <strong className="uppercase font-black">{job.full_name}</strong></span>
-                  <span className="bg-amber-500 text-white font-black text-[9px] px-3 py-1 rounded-md uppercase tracking-wider">Processing By: {job.profiles?.full_name || 'System'}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* ✂️ REMOVED THE EMBEDDED MONITORING INBOX SYSTEM FROM HERE TO SHRINK THE LAYOUT */}
 
         {/* ACTIVE WORKLIST */}
         {activeJobs.length > 0 && (
@@ -375,7 +364,6 @@ export default function ServiceQueue() {
             <div className="p-8 border-b-4 border-blue-950 bg-slate-50/50 flex flex-col sm:flex-row justify-between items-center gap-4">
                <h3 className="text-[11px] font-black text-blue-950 uppercase tracking-[0.2em]">Queue Workflow Ledger ({filteredQueue.length})</h3>
                
-               {/* NEW: NEO-BRUTALIST LIVE SEARCH BAR CONTAINER */}
                <div className="w-full sm:w-72 relative">
                  <input 
                    type="text" 
@@ -391,14 +379,14 @@ export default function ServiceQueue() {
             </div>
             <div className="divide-y-2 divide-slate-100">
              {filteredQueue.map((student) => (
-               <div key={student.id} className="p-8 flex flex-col md:flex-row justify-between items-center gap-6 hover:bg-blue-50/30 transition-all">
+               <div key={student.id} className="p-8 flex flex-col md:flex-row justify-between items-center gap-6 hover:bg-blue-50/30 transition-colors">
                  <div className="text-center md:text-left">
                     <div className="flex flex-wrap items-center gap-3 justify-center md:justify-start">
                        <p className="font-black text-blue-950 uppercase tracking-tight text-lg">{student.full_name}</p>
                        {student.assigned_consultant_id && (
-                          <span className="bg-purple-100 text-purple-700 px-3 py-0.5 rounded-md text-[8px] font-black uppercase tracking-widest border border-purple-200">
-                            VIP: {student.consultant?.full_name}
-                          </span>
+                         <span className="bg-purple-100 text-purple-700 px-3 py-0.5 rounded-md text-[8px] font-black uppercase tracking-widest border border-purple-200">
+                           VIP: {student.consultant?.full_name}
+                         </span>
                        )}
                     </div>
                     <p className="text-[10px] font-bold text-slate-400 mt-1 uppercase">{student.services?.service_name} • {student.phone_number}</p>

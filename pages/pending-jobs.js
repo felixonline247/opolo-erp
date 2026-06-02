@@ -23,7 +23,7 @@ export default function PendingJobs() {
       .eq('id', session.user.id)
       .single()
       
-    if (profile?.role !== 'Manager' && profile?.role !== 'Admin') {
+    if (profile?.role !== 'Manager' && profile?.role !== 'Admin' && profile?.role !== 'Supervisor') {
       router.push('/dashboard')
     }
   }
@@ -40,17 +40,16 @@ export default function PendingJobs() {
     setLoading(false)
   }
 
-  // NEW: Drop Task Handler function configuration metrics
   const handleDropTask = async (id) => {
     if (!confirm("Are you sure you want to drop this task? This will remove the current staff assignment and send it back to the Waiting Queue.")) return
     
-    // Resets status back to 'Awaiting Service' and completely releases any operator lock fields
+    // 🚀 FIXED: Uses correct schema columns (status, started_by, started_at) matching your database configuration matrix
     const { error } = await supabase
       .from('students')
       .update({ 
         status: 'Awaiting Service',
-        assigned_operator_id: null, // Releases the operator constraint lock if your schema uses it
-        operator_email: null        // Resets worker association indicators safely
+        started_by: null, 
+        started_at: null        
       })
       .eq('id', id)
 
@@ -102,7 +101,7 @@ export default function PendingJobs() {
             <h1 className="text-4xl font-black text-blue-950 uppercase tracking-tighter italic">Pending Job Control</h1>
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-2">Active queue operational management</p>
           </div>
-          <Link href="/manager" className="px-6 py-2.5 bg-white border border-slate-200 rounded-full text-[10px] font-black uppercase hover:bg-slate-100 transition-all shadow-sm">
+          <Link href="/dashboard" className="px-6 py-2.5 bg-white border border-slate-200 rounded-full text-[10px] font-black uppercase hover:bg-slate-100 transition-all shadow-sm">
             ← Back Dashboard
           </Link>
         </header>
@@ -154,8 +153,6 @@ export default function PendingJobs() {
                       <td className="p-6 pr-8 text-right">
                         <div className="flex justify-end gap-2">
                           
-                          {/* NEW ACTION CONTROL: CONDITIONAL DROP TASK BUTTON */}
-                          {/* Only allow dropping tasks that have already been selected ('Started') by a staff member */}
                           <button
                             disabled={job.status !== 'Started'}
                             onClick={() => handleDropTask(job.id)}

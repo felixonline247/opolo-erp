@@ -17,7 +17,7 @@ export default function Settings() {
     service_name: '', 
     price: '', 
     institution_cost: '',
-    agent_price: '' // NEW: Track customized B2B agent base rates
+    agent_price: '' 
   })
 
   const [staffData, setStaffData] = useState({ 
@@ -51,7 +51,6 @@ export default function Settings() {
   }
 
   const fetchServices = async () => {
-    // UPDATED: Selecting agent_price dynamically from database table mapping rows
     const { data } = await supabase.from('services').select('*').order('created_at', { ascending: true })
     setServices(data || [])
   }
@@ -89,7 +88,7 @@ export default function Settings() {
       ...formData,
       price: parseFloat(formData.price),
       institution_cost: parseFloat(formData.institution_cost) || 0,
-      agent_price: parseFloat(formData.agent_price) || 0 // NEW: Injects custom B2B rate payload entries
+      agent_price: parseFloat(formData.agent_price) || 0 
     }
 
     if (editingId) {
@@ -228,7 +227,6 @@ export default function Settings() {
                 <input type="number" className="w-full p-4 rounded-xl border-none ring-1 ring-red-100 bg-red-50/30 focus:ring-2 focus:ring-red-400 outline-none text-sm font-bold text-red-900 placeholder-red-300" placeholder="Amount paid to JAMB (₦)" value={formData.institution_cost} onChange={(e) => setFormData({...formData, institution_cost: e.target.value})} required />
               </div>
 
-              {/* NEW: BUSINESS CENTER B2B DISCOUNT PRICE CONFIGURATION FORM FIELD */}
               <div className="md:col-span-1">
                 <label className="block text-[9px] font-black text-purple-600 uppercase mb-1 ml-1">Business Center Agent Price</label>
                 <input type="number" className="w-full p-4 rounded-xl border-none ring-1 ring-purple-200 bg-purple-50/30 focus:ring-2 focus:ring-purple-500 outline-none text-sm font-bold text-purple-900 placeholder-purple-300" placeholder="Discounted Partner Price (₦)" value={formData.agent_price} onChange={(e) => setFormData({...formData, agent_price: e.target.value})} required />
@@ -287,9 +285,9 @@ export default function Settings() {
                 <select className="w-full p-4 rounded-xl border-none outline-none text-sm font-bold bg-blue-900 text-white" value={staffData.role} onChange={(e) => setStaffData({...staffData, role: e.target.value})}>
                   <option value="Front Desk">Front Desk</option>
                   <option value="Service Staff">Service Staff</option>
+                  <option value="Supervisor">Supervisor</option> {/* 🚀 UPDATED OPTION FIELD */}
                   <option value="Account">Account Officer</option>
                   <option value="Consultant">Consultant (VIP)</option>
-                  {/* NEW: DYNAMIC PARTNER AGENT ACCOUNT ALLOCATION ROLE OPTION */}
                   <option value="Partner Agent">Partner Agent (B2B)</option>
                   <option value="Manager">Manager</option>
                 </select>
@@ -332,6 +330,7 @@ export default function Settings() {
                   <div className="flex flex-wrap gap-2 items-center">
                     <span className={`text-[8px] font-black px-2 py-1 rounded-md uppercase tracking-widest ${
                       member.role === 'Manager' ? 'bg-blue-900 text-white' : 
+                      member.role === 'Supervisor' ? 'bg-indigo-900 text-white' : /* 🚀 UPDATED LIST STYLE VIEW BADGE */
                       member.role === 'Consultant' ? 'bg-purple-900 text-white' : 
                       member.role === 'Partner Agent' ? 'bg-purple-600 text-white' : 
                       'bg-slate-200 text-slate-600'
