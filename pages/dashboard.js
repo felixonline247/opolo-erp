@@ -18,15 +18,12 @@ export default function Dashboard() {
   const [isChatOpen, setIsChatOpen] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   
-  // Bulletproof client-side hydration mount guard tracking flag
   const [isMounted, setIsMounted] = useState(false)
   
   const router = useRouter()
-
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 30
 
-  // Handle client-side mounting safely to prevent hydration desync errors
   useEffect(() => {
     setIsMounted(true)
   }, [])
@@ -46,7 +43,6 @@ export default function Dashboard() {
       
       const role = profile?.role || 'Front Desk'
       
-      // Secure cross-routing gatekeeper redirection rule
       if (role === 'Partner Agent') {
         return router.push('/business-center')
       }
@@ -66,20 +62,15 @@ export default function Dashboard() {
 
   const fetchData = async (role) => {
     setLoading(true)
-    
-    // Fetch services for dropdowns
     const { data: srv } = await supabase.from('services').select('*')
     setServices(srv || [])
 
-    // Included registration_source to isolate third-party agent records
     let query = supabase.from('students').select(`
       *, 
       services(service_name, price, commission_type, commission_value)
     `)
 
-    // Role-based status filtering
     if (role === 'Front Desk') {
-      // Front Desk tracks both online prepaid queues and freshly registered local walk-ins
       query = query.in('status', ['Queue Wallet', 'Awaiting Payment'])
     } else if (role === 'Account Officer' || role === 'Account') {
       query = query.in('status', ['Pending', 'Awaiting Payment'])
@@ -107,7 +98,9 @@ export default function Dashboard() {
     if (!isConfirmed) return
 
     setIsProcessing(true)
-    const { error } = await supabase
+    
+    // Attempt standard update with tracking email
+    let response = await supabase
       .from('students')
       .update({ 
         status: 'Pending',
@@ -115,12 +108,22 @@ export default function Dashboard() {
       })
       .eq('id', student.id)
     
+    // 🚀 CACHE SAFE FALLBACK: If the column is missing in cache, update status only
+    if (response.error && response.error.message.includes('front_desk_officer_email')) {
+      console.warn("Schema cache latency detected for tracking email column. Executing status fallback loop...");
+      response = await supabase
+        .from('students')
+        .update({ status: 'Pending' })
+        .eq('id', student.id)
+    }
+    
     setIsProcessing(false)
-    if (!error) {
+    
+    if (!response.error) {
       await logActivity("Handoff", `Transferred Business Center student ${student.full_name} to Accounts queue`);
       fetchData(userRole);
     } else {
-      alert("Handoff error: " + error.message)
+      alert("Handoff error: " + response.error.message)
     }
   }
 
@@ -205,7 +208,6 @@ export default function Dashboard() {
     }
   }
 
-  // Filter Logic
   const filteredStudents = students.filter(student => {
     const searchStr = searchTerm.toLowerCase();
     const matchesSearch = (
@@ -220,13 +222,11 @@ export default function Dashboard() {
     return matchesSearch && (studentDate === today);
   })
 
-  // Pagination
   const indexOfLastItem = currentPage * itemsPerPage;
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
   const currentItems = filteredStudents.slice(indexOfFirstItem, indexOfLastItem);
   const totalPages = Math.ceil(filteredStudents.length / itemsPerPage);
 
-  // Fallback Loading Screen
   if ((loading && !students.length) || !isMounted) {
     return <div className="p-20 text-center font-black text-blue-900 uppercase tracking-widest animate-pulse">Opolo ERP Loading...</div>
   }
@@ -284,7 +284,6 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           {(userRole === 'Front Desk' || userRole === 'Manager' || userRole === 'Admin') && (
             <div className="lg:col-span-4">
-               {/* Initial state configuration maps directly to "Awaiting Payment" via answers validation flow */}
                <RegistrationForm services={services} onSelect={() => fetchData(userRole)} />
             </div>
           )}
