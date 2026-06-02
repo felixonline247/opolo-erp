@@ -15,9 +15,11 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [filterDate, setFilterDate] = useState('today')
+  const [filterTimeSlot, setFilterTimeSlot] = useState('all') // NEW: Time Range Filter State
   const [isChatOpen, setIsChatOpen] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   
+  // Bulletproof client-side hydration mount guard tracking flag
   const [isMounted, setIsMounted] = useState(false)
   
   const router = useRouter()
@@ -70,8 +72,10 @@ export default function Dashboard() {
       services(service_name, price, commission_type, commission_value)
     `)
 
+    // Role-based status filtering
     if (role === 'Front Desk') {
-      query = query.in('status', ['Queue Wallet', 'Awaiting Payment'])
+      // 🚀 FIXED: Front Desk now bypasses strict column filtering to see EVERY single student row record
+      // No constraint added here so all statuses pull down seamlessly
     } else if (role === 'Account Officer' || role === 'Account') {
       query = query.in('status', ['Pending', 'Awaiting Payment'])
     } else if (role === 'Service Staff') {
@@ -99,7 +103,6 @@ export default function Dashboard() {
 
     setIsProcessing(true)
     
-    // Attempt standard update with tracking email
     let response = await supabase
       .from('students')
       .update({ 
@@ -108,9 +111,7 @@ export default function Dashboard() {
       })
       .eq('id', student.id)
     
-    // 🚀 CACHE SAFE FALLBACK: If the column is missing in cache, update status only
     if (response.error && response.error.message.includes('front_desk_officer_email')) {
-      console.warn("Schema cache latency detected for tracking email column. Executing status fallback loop...");
       response = await supabase
         .from('students')
         .update({ status: 'Pending' })
@@ -208,6 +209,7 @@ export default function Dashboard() {
     }
   }
 
+  // Filter Logic (Date, Search, and Time slot ranges)
   const filteredStudents = students.filter(student => {
     const searchStr = searchTerm.toLowerCase();
     const matchesSearch = (
@@ -216,10 +218,28 @@ export default function Dashboard() {
       student.jamb_profile_code?.toLowerCase().includes(searchStr)
     );
 
-    if (filterDate === 'all') return matchesSearch;
-    const today = new Date().toISOString().split('T')[0];
-    const studentDate = new Date(student.created_at).toISOString().split('T')[0];
-    return matchesSearch && (studentDate === today);
+    // 1. Date filter block evaluation
+    let matchesDate = true;
+    if (filterDate === 'today') {
+      const today = new Date().toISOString().split('T')[0];
+      const studentDate = new Date(student.created_at).toISOString().split('T')[0];
+      matchesDate = (studentDate === today);
+    }
+
+    // 2. NEW: Time Range hourly slice parameters filter evaluation block
+    let matchesTime = true;
+    if (filterTimeSlot !== 'all') {
+      const studentHour = new Date(student.created_at).getHours();
+      if (filterTimeSlot === 'morning') {
+        matchesTime = (studentHour >= 6 && studentHour < 12); // 6:00 AM - 11:59 AM
+      } else if (filterTimeSlot === 'afternoon') {
+        matchesTime = (studentHour >= 12 && studentHour < 17); // 12:00 PM - 4:59 PM
+      } else if (filterTimeSlot === 'evening') {
+        matchesTime = (studentHour >= 17 && studentHour <= 23); // 5:00 PM - 11:59 PM
+      }
+    }
+
+    return matchesSearch && matchesDate && matchesTime;
   })
 
   const indexOfLastItem = currentPage * itemsPerPage;
@@ -291,13 +311,30 @@ export default function Dashboard() {
           <div className={(userRole === 'Front Desk' || userRole === 'Manager' || userRole === 'Admin') ? "lg:col-span-8" : "lg:col-span-12"}>
             <div className="bg-white shadow-xl rounded-2xl overflow-hidden border border-gray-100">
               <div className="p-4 bg-slate-50 border-b flex flex-col md:flex-row justify-between items-center gap-4">
+                
+                {/* DATE ATOMIC SWITCH TOGGLES */}
                 <div className="flex bg-gray-200 p-1 rounded-xl">
                   <button onClick={() => {setFilterDate('today'); setCurrentPage(1)}} className={`px-4 py-1.5 rounded-lg text-[10px] font-black transition ${filterDate === 'today' ? 'bg-white text-blue-900 shadow-sm' : 'text-gray-500'}`}>TODAY</button>
                   <button onClick={() => {setFilterDate('all'); setCurrentPage(1)}} className={`px-4 py-1.5 rounded-lg text-[10px] font-black transition ${filterDate === 'all' ? 'bg-white text-blue-900 shadow-sm' : 'text-gray-500'}`}>ALL RECORDS</button>
                 </div>
+
+                {/* NEW: TIME RANGE HOUR SLOT SELECTOR DROPDOWN */}
+                <div className="w-full md:w-auto">
+                  <select
+                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-[10px] font-black uppercase tracking-widest outline-none text-blue-950 focus:ring-2 focus:ring-blue-500"
+                    value={filterTimeSlot}
+                    onChange={(e) => {setFilterTimeSlot(e.target.value); setCurrentPage(1)}}
+                  >
+                    <option value="all">⏰ All Hours Slot</option>
+                    <option value="morning">🌅 Morning (6am - 12pm)</option>
+                    <option value="afternoon">☀️ Afternoon (12pm - 5pm)</option>
+                    <option value="evening">🌌 Evening (5pm - 12am)</option>
+                  </select>
+                </div>
+
                 <input 
                   type="text" placeholder="Search student name..."
-                  className="block w-full md:w-64 px-4 py-2 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                  className="block w-full md:w-48 px-4 py-2 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                   value={searchTerm} onChange={(e) => {setSearchTerm(e.target.value); setCurrentPage(1)}}
                 />
               </div>
@@ -319,7 +356,7 @@ export default function Dashboard() {
                             <div className="font-black text-slate-800 uppercase text-xs tracking-tight">{student.full_name}</div>
                             
                             {student.registration_source === 'Business Center' ? (
-                              <span className="bg-purple-900 text-white text-[8px] font-black uppercase px-2 py-0.5 rounded shadow-sm border border-purple-950 animate-pulse">
+                              <span className="bg-purple-900 text-white text-[8px] font-black uppercase px-2 py-0.5 rounded shadow-sm border border-purple-950">
                                 🏢 Business-Centre
                               </span>
                             ) : student.assigned_consultant_id ? (
@@ -329,7 +366,11 @@ export default function Dashboard() {
                             )}
                           </div>
                           <div className="text-[10px] text-slate-400 font-bold mt-0.5 uppercase">
-                            STATUS: <span className={student.status === 'Completed' ? "text-green-600" : "text-blue-600"}>{student.status}</span>
+                            STATUS: <span className={`font-black ${
+                              student.status === 'Completed' ? 'text-green-600' : 
+                              student.status === 'Awaiting Service' ? 'text-purple-600 animate-pulse' : 
+                              student.status === 'Pending' ? 'text-amber-500' : 'text-blue-600'
+                            }`}>{student.status}</span>
                           </div>
                         </td>
                         <td className="p-5">
@@ -337,6 +378,7 @@ export default function Dashboard() {
                           <div className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">₦{Number(student.amount_paid || student.services?.price || 0).toLocaleString()} • {student.payment_method || 'Unpaid'}</div>
                         </td>
                         <td className="p-5 text-right">
+                          {/* 🚀 FIXED LOGIC LAYER: Actions open contextually without hiding records down when statuses mutate */}
                           {userRole === 'Front Desk' && student.status === 'Queue Wallet' && (
                             <button 
                               disabled={isProcessing}
@@ -348,21 +390,59 @@ export default function Dashboard() {
                           )}
 
                           {userRole === 'Front Desk' && student.status === 'Awaiting Payment' && (
-                            <span className="text-blue-600 font-black text-[10px] bg-blue-50 px-4 py-2 rounded-xl border border-blue-100 uppercase italic tracking-wider">
-                              Sent to Cashier
+                            <span className="text-amber-600 font-black text-[10px] bg-amber-50 px-3 py-1 rounded-full border border-amber-100 uppercase tracking-wider">
+                              ⏳ Awaiting Cashier
+                            </span>
+                          )}
+
+                          {userRole === 'Front Desk' && student.status === 'Pending' && (
+                            <span className="text-purple-600 font-black text-[10px] bg-purple-50 px-3 py-1 rounded-full border border-purple-100 uppercase tracking-wider">
+                              💳 Verifying Payment
+                            </span>
+                          )}
+
+                          {userRole === 'Front Desk' && student.status === 'Awaiting Service' && (
+                            <span className="text-indigo-600 font-black text-[10px] bg-indigo-50 px-3 py-1 rounded-full border border-indigo-100 uppercase tracking-wider animate-pulse">
+                              ⚡ In Operations Queue
+                            </span>
+                          )}
+
+                          {userRole === 'Front Desk' && student.status === 'Started' && (
+                            <span className="text-blue-600 font-black text-[10px] bg-blue-50 px-3 py-1 rounded-full border border-blue-100 uppercase tracking-wider">
+                              👨‍💻 Processing
+                            </span>
+                          )}
+
+                          {student.status === 'Completed' && (
+                            <span className="text-green-600 font-black text-[10px] bg-green-50 px-4 py-1.5 rounded-full border border-green-200 uppercase tracking-widest shadow-sm font-sans not-italic">
+                              ✅ SUCCESS
                             </span>
                           )}
 
                           {(userRole === 'Account Officer' || userRole === 'Account') && (student.status === 'Awaiting Payment' || student.status === 'Pending') && (
-                            <div className="text-xs text-slate-400 font-black italic">Manage via Accounts Portal</div>
+                            <div className="flex gap-2 justify-end">
+                              {student.registration_source === 'Business Center' ? (
+                                <button
+                                  onClick={async () => {
+                                    if (!confirm(`Approve release to operation queue?`)) return
+                                    const { error } = await supabase.from('students').update({ status: 'Awaiting Service' }).eq('id', student.id)
+                                    if (!error) fetchData(userRole)
+                                  }}
+                                  className="bg-purple-900 hover:bg-black text-white px-5 py-2 rounded-xl text-[10px] font-black shadow-md"
+                                >
+                                  Release Order
+                                </button>
+                              ) : (
+                                <>
+                                  <button onClick={() => handleConfirmPayment(student, 'Cash')} className="bg-green-600 text-white px-3 py-2 rounded-lg text-[10px] font-black shadow-sm uppercase">CASH</button>
+                                  <button onClick={() => handleConfirmPayment(student, 'Transfer')} className="bg-blue-600 text-white px-3 py-2 rounded-lg text-[10px] font-black shadow-sm uppercase">TRANS</button>
+                                </>
+                              )}
+                            </div>
                           )}
 
                           {userRole === 'Service Staff' && student.status === 'Awaiting Service' && (
                             <button onClick={() => handleMarkDone(student)} className="bg-slate-900 text-white px-5 py-2 rounded-xl text-[10px] font-black shadow-lg uppercase">MARK DONE</button>
-                          )}
-
-                          {student.status === 'Completed' && (
-                            <span className="text-green-600 font-black text-[10px] bg-green-50 px-3 py-1 rounded-full border border-green-100 uppercase italic">SUCCESS</span>
                           )}
                         </td>
                       </tr>
