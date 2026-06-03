@@ -15,9 +15,47 @@ export default function StaffSignup() {
     setLoading(true)
     setMessage(null)
 
-    // 1. Create the Auth Account in Supabase
+    const cleanEmail = email.toLowerCase().trim()
+
+    // 🚀 STEP 1: Strict Invitation Guard Check
+    // Verifies if the manager pre-registered the profile row inside Settings first
+    const { data: existingProfile, error: checkError } = await supabase
+      .from('profiles')
+      .select('id, email, role')
+      .eq('email', cleanEmail)
+      .maybeSingle()
+
+    if (checkError) {
+      console.error("Database pre-check verification error:", checkError.message)
+      setMessage({ type: 'error', text: 'Verification failed. Please check network connectivity and try again.' })
+      setLoading(false)
+      return
+    }
+
+    // 🛡️ SECURITY BLOCKER 1: Stop execution immediately if the email has not been added by a manager
+    if (!existingProfile) {
+      setMessage({ 
+        type: 'error', 
+        text: 'Access Denied: Your email has not been pre-registered by a manager.' 
+      })
+      setLoading(false)
+      return
+    }
+
+    // 🛡️ SECURITY BLOCKER 2: Stop execution if the email was already claimed and onboarded
+    if (existingProfile.id) {
+      setMessage({ 
+        type: 'error', 
+        text: 'This account has already completed onboarding. Please go to the Login page.' 
+      })
+      setLoading(false)
+      return
+    }
+
+    // 🚀 STEP 2: Authorized Account Registration
+    // Only triggers if the whitelist validation constraints above clear perfectly
     const { data: authData, error: authError } = await supabase.auth.signUp({
-      email: email.toLowerCase().trim(),
+      email: cleanEmail,
       password: password,
     })
 
@@ -27,48 +65,40 @@ export default function StaffSignup() {
       return
     }
 
-    if (authData.user) {
-      // 2. Link the existing profile to this new Auth User
-      // We look for the row you created in Settings using the email
-      const { data: existingProfile, error: checkError } = await supabase
+    if (authData?.user) {
+      // 🚀 STEP 3: Link Auth Session ID to Pre-Registered Profile
+      const { error: updateError } = await supabase
         .from('profiles')
-        .select('email')
-        .eq('email', email.toLowerCase().trim())
-        .single()
-
-      if (existingProfile) {
-        // If a profile was pre-registered, update it with the real Auth ID
-        const { error: updateError } = await supabase
-          .from('profiles')
-          .update({ id: authData.user.id })
-          .eq('email', email.toLowerCase().trim())
-        
-        if (updateError) console.error("Link Error:", updateError.message)
-      } else {
-        // 3. If no pre-existing profile was found, create a new one from scratch
-        const { error: insertError } = await supabase
-          .from('profiles')
-          .insert([
-            { 
-              id: authData.user.id, 
-              email: email.toLowerCase().trim(), 
-              role: 'Service Staff' 
-            }
-          ])
-        
-        if (insertError) console.error("Insert Error:", insertError.message)
+        .update({ id: authData.user.id })
+        .eq('email', cleanEmail)
+      
+      if (updateError) {
+        console.error("Profile association linking matrix error:", updateError.message)
+        setMessage({ type: 'error', text: 'Onboarding linking error: ' + updateError.message })
+        setLoading(false)
+        return
       }
 
       setMessage({ 
         type: 'success', 
-        text: 'Signup successful! Please check your email for a confirmation link before logging in.' 
+        text: 'Signup successful! Profile linked successfully. Logging into your workstation...' 
       })
       
-      // Optional: Redirect to login after a short delay
-      setTimeout(() => router.push('/'), 5000)
+      // 🚀 STEP 4: Instant Workstation Onboarding Routing Layout (Email confirmations are OFF)
+      // Routes them automatically based on the profile role configured by the manager
+      setTimeout(() => {
+        const role = existingProfile.role || 'Front Desk'
+        if (role === 'Partner Agent') {
+          router.push('/business-center')
+        } else if (role === 'Supervisor' || role === 'Service Staff') {
+          router.push('/service')
+        } else {
+          router.push('/dashboard')
+        }
+      }, 2000)
+    } else {
+      setLoading(false)
     }
-    
-    setLoading(false)
   }
 
   return (
@@ -115,7 +145,7 @@ export default function StaffSignup() {
             disabled={loading}
             className="w-full bg-blue-950 text-white p-5 rounded-2xl font-black text-xs uppercase tracking-[0.2em] hover:bg-black transition-all shadow-lg shadow-blue-900/20 disabled:opacity-50"
           >
-            {loading ? 'Processing...' : 'Create Staff Account'}
+            {loading ? 'Verifying Credentials...' : 'Create Staff Account'}
           </button>
         </form>
 
