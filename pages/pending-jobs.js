@@ -6,6 +6,7 @@ import Link from 'next/link'
 export default function PendingJobs() {
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
+  const [searchTerm, setSearchTerm] = useState('') // 🚀 TRACKS INSTANT SEARCH INPUT
   const router = useRouter()
 
   useEffect(() => {
@@ -30,6 +31,7 @@ export default function PendingJobs() {
 
   const fetchPendingJobs = async () => {
     setLoading(true)
+    // 🛡️ UNTOUCHED: Kept your exact original database column structures intact
     const { data, error } = await supabase
       .from('students')
       .select('id, full_name, jamb_profile_code, amount_paid, created_at, status')
@@ -43,7 +45,6 @@ export default function PendingJobs() {
   const handleDropTask = async (id) => {
     if (!confirm("Are you sure you want to drop this task? This will remove the current staff assignment and send it back to the Waiting Queue.")) return
     
-    // 🚀 FIXED: Uses correct schema columns (status, started_by, started_at) matching your database configuration matrix
     const { error } = await supabase
       .from('students')
       .update({ 
@@ -91,12 +92,22 @@ export default function PendingJobs() {
     }
   }
 
+  // 🚀 HIGH-SPEED SEARCH FILTER ENGINE: Instantly subsets the matching records locally inside the browser
+  const filteredJobs = jobs.filter(job => {
+    const cleanSearch = searchTerm.toLowerCase().trim()
+    if (!cleanSearch) return true
+    return (
+      job.full_name?.toLowerCase().includes(cleanSearch) ||
+      job.jamb_profile_code?.toLowerCase().includes(cleanSearch)
+    )
+  })
+
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-12 font-sans text-blue-950">
       <div className="max-w-6xl mx-auto">
         
         {/* Header section layout */}
-        <header className="flex justify-between items-center mb-10">
+        <header className="flex justify-between items-center mb-6">
           <div>
             <h1 className="text-4xl font-black text-blue-950 uppercase tracking-tighter italic">Pending Job Control</h1>
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-2">Active queue operational management</p>
@@ -105,6 +116,17 @@ export default function PendingJobs() {
             ← Back Dashboard
           </Link>
         </header>
+
+        {/* 🚀 NEW: NEO-BRUTALIST LIVE OPERATIONAL SEARCH CONTAINER */}
+        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm mb-6">
+          <input 
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search pending list by student name or profile code instantly..."
+            className="w-full p-4 rounded-xl bg-slate-50 border-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-950 outline-none font-bold text-sm text-blue-950"
+          />
+        </div>
 
         {/* Central Operations Panel container */}
         <div className="bg-white rounded-[2.5rem] shadow-sm overflow-hidden border border-slate-200">
@@ -125,14 +147,14 @@ export default function PendingJobs() {
                       Loading Operations Queue...
                     </td>
                   </tr>
-                ) : jobs.length === 0 ? (
+                ) : filteredJobs.length === 0 ? (
                   <tr>
                     <td colSpan="4" className="p-24 text-center text-slate-300 font-black uppercase text-[10px] tracking-[0.3em]">
-                      No pending execution assignments found
+                      No matching pending queue records found
                     </td>
                   </tr>
                 ) : (
-                  jobs.map((job) => (
+                  filteredJobs.map((job) => (
                     <tr key={job.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="p-6 pl-8">
                         <p className="font-black text-blue-950 uppercase text-lg tracking-tight">{job.full_name}</p>
