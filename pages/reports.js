@@ -6,9 +6,11 @@ import { logActivity } from '../lib/logger'
 
 export default function CommissionReport() {
   const [report, setReport] = useState([])
+  const [supervisorReport, setSupervisorReport] = useState([]) // 🚀 Independent Supervisor State Ledger
   const [paymentHistory, setPaymentHistory] = useState([]) 
   const [activeTab, setActiveTab] = useState('unpaid') 
   const [totalPayout, setTotalPayout] = useState(0)
+  const [totalSupervisorPayout, setTotalSupervisorPayout] = useState(0) // 🚀 Summary Card Metrics Tracker
   const [loading, setLoading] = useState(true)
   const [processingId, setProcessingId] = useState(null)
   const router = useRouter()
@@ -44,6 +46,7 @@ export default function CommissionReport() {
     setLoading(true)
     try {
       if (activeTab === 'unpaid') {
+        // 🚀 Dynamic Query Modification: Pulling pricing attributes needed for overhead computation matrices
         const { data: jobs, error: jobsError } = await supabase
           .from('students')
           .select(`
@@ -51,21 +54,25 @@ export default function CommissionReport() {
             completed_by, 
             completed_at,
             is_payout_completed,
-            full_name
+            is_supervisor_payout_completed,
+            full_name,
+            amount_paid,
+            institution_cost
           `)
           .eq('status', 'Completed') 
-          .eq('is_payout_completed', false) 
           .gte('completed_at', `${startDate}T00:00:00`)
           .lte('completed_at', `${endDate}T23:59:59`)
 
         if (jobsError) throw jobsError
 
-        const { data: profiles } = await supabase.from('profiles').select('id, full_name, email')
+        const { data: profiles } = await supabase.from('profiles').select('id, full_name, email, role')
 
         const profileMap = {}
         profiles?.forEach(p => { profileMap[p.id] = p })
 
-        const grouped = jobs.reduce((acc, curr) => {
+        // Pure Staff Loop
+        const staffGrouped = jobs.reduce((acc, curr) => {
+          if (curr.is_payout_completed) return acc
           const staffId = curr.completed_by 
           if (!staffId || !profileMap[staffId]) return acc
           
@@ -83,9 +90,42 @@ export default function CommissionReport() {
           return acc
         }, {})
 
-        const reportArray = Object.values(grouped)
-        setReport(reportArray)
-        setTotalPayout(reportArray.reduce((sum, item) => sum + item.total_unpaid, 0))
+        // 🚀 Isolated Supervisor Override Loop (Runs itemized calculation per row, capped at ₦17,500 maximum)
+        const supervisorGrouped = jobs.reduce((acc, curr) => {
+          if (curr.is_supervisor_payout_completed) return acc
+          const staffId = curr.completed_by 
+          if (!staffId || !profileMap[staffId] || profileMap[staffId].role !== 'Supervisor') return acc
+          
+          const netProfit = Number(curr.amount_paid || 0) - Number(curr.institution_cost || 0)
+          let supervisorCut = 0
+          if (netProfit > 0) {
+            supervisorCut = netProfit * 0.025
+            if (supervisorCut > 17500) supervisorCut = 17500 // Ceiling Cap Enforcement
+          }
+
+          if (supervisorCut <= 0) return acc
+
+          if (!acc[staffId]) {
+            acc[staffId] = {
+              id: staffId,
+              name: profileMap[staffId].full_name,
+              email: profileMap[staffId].email,
+              jobs: 0,
+              total_unpaid: 0
+            }
+          }
+          acc[staffId].jobs += 1
+          acc[staffId].total_unpaid += supervisorCut
+          return acc
+        }, {})
+
+        const staffArray = Object.values(staffGrouped)
+        const supervisorArray = Object.values(supervisorGrouped)
+
+        setReport(staffArray)
+        setSupervisorReport(supervisorArray)
+        setTotalPayout(staffArray.reduce((sum, item) => sum + item.total_unpaid, 0))
+        setTotalSupervisorPayout(supervisorArray.reduce((sum, item) => sum + item.total_unpaid, 0))
       } else {
         const { data: pastJobs, error: historyError } = await supabase
           .from('students')
@@ -94,11 +134,13 @@ export default function CommissionReport() {
             full_name,
             staff_commission,
             completed_at,
-            profiles!students_completed_by_fkey(full_name, email),
+            amount_paid,
+            institution_cost,
+            is_supervisor_payout_completed,
+            profiles!students_completed_by_fkey(full_name, email, role),
             services(service_name)
           `)
           .eq('status', 'Completed')
-          .eq('is_payout_completed', true)
           .gte('completed_at', `${startDate}T00:00:00`)
           .lte('completed_at', `${endDate}T23:59:59`)
           .order('completed_at', { ascending: false })
@@ -110,7 +152,6 @@ export default function CommissionReport() {
     } catch (err) {
       console.error("Report error:", err.message)
     } finally {
-      // FIXED: Swapped typo to the correct loading state hook
       setLoading(false)
     }
   }
@@ -131,11 +172,36 @@ export default function CommissionReport() {
       if (updateError) throw updateError
 
       await logActivity("Payout", `Paid ₦${staff.total_unpaid.toLocaleString()} commission to ${staff.name}`)
-      
-      alert("Payment processed securely. Staff baseline metrics are unaffected.")
+      alert("Payment processed securely.")
       fetchCommissionData()
     } catch (err) {
       alert("Payout failed: " + err.message)
+    } finally {
+      setProcessingId(null)
+    }
+  }
+
+  // 🚀 Clear Supervisor Overhead Override Function
+  const handleSupervisorPayout = async (sup) => {
+    if (!confirm(`Mark ₦${sup.total_unpaid.toLocaleString()} Supervisor Override as paid to ${sup.name}?`)) return
+    setProcessingId(`sup-${sup.id}`)
+
+    try {
+      const { error: updateError } = await supabase.from('students')
+        .update({ is_supervisor_payout_completed: true })
+        .eq('completed_by', sup.id)
+        .eq('status', 'Completed')
+        .eq('is_supervisor_payout_completed', false) 
+        .gte('completed_at', `${startDate}T00:00:00`)
+        .lte('completed_at', `${endDate}T23:59:59`)
+
+      if (updateError) throw updateError
+
+      await logActivity("Supervisor Payout", `Cleared ₦${sup.total_unpaid.toLocaleString()} Overhead Override to ${sup.name}`)
+      alert("Supervisor Override clear successful!")
+      fetchCommissionData()
+    } catch (err) {
+      alert("Supervisor payout failure: " + err.message)
     } finally {
       setProcessingId(null)
     }
@@ -167,99 +233,120 @@ export default function CommissionReport() {
           </div>
         </div>
 
-        <div className="bg-blue-900 rounded-[2.5rem] p-10 mb-8 text-white shadow-2xl shadow-blue-900/20 relative overflow-hidden">
-          <div className="relative z-10">
-            <p className="text-[10px] font-black uppercase opacity-60 tracking-[0.2em] mb-2">Unpaid Pending Payouts</p>
-            <h2 className="text-6xl font-black tracking-tighter italic">₦{totalPayout.toLocaleString()}</h2>
+        {/* 🚀 SPLIT ACCOUNTING SUMMARY CONTAINER CARDS */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+          <div className="bg-blue-900 rounded-[2rem] p-8 text-white shadow-xl relative overflow-hidden">
+            <p className="text-[10px] font-black uppercase opacity-60 tracking-wider mb-2">Standard Staff Unpaid Due</p>
+            <h2 className="text-4xl font-black tracking-tighter italic">₦{totalPayout.toLocaleString()}</h2>
           </div>
-          <div className="absolute top-[-20%] right-[-10%] w-64 h-64 bg-white/5 rounded-full blur-3xl"></div>
+          
+          {/* 🚀 Pure Supervisor Independent Override Analytics Card Block */}
+          <div className="bg-amber-500 rounded-[2rem] p-8 text-blue-950 shadow-xl relative overflow-hidden border-2 border-blue-950 shadow-[4px_4px_0px_0px_rgba(26,54,93,1)]">
+            <p className="text-[10px] font-black uppercase opacity-70 tracking-wider mb-2">⚡ Supervisor 2.5% Override Pool (Capped)</p>
+            <h2 className="text-4xl font-black tracking-tighter italic">₦{totalSupervisorPayout.toLocaleString()}</h2>
+          </div>
         </div>
 
         <div className="flex bg-slate-200 p-1.5 rounded-2xl mb-4 w-full sm:w-80 shadow-inner">
-          <button 
-            onClick={() => setActiveTab('unpaid')}
-            className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${activeTab === 'unpaid' ? 'bg-blue-950 text-white shadow-md' : 'text-slate-500 hover:text-blue-950'}`}
-          >
-            ⏳ Unpaid Due
-          </button>
-          <button 
-            onClick={() => setActiveTab('history')}
-            className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${activeTab === 'history' ? 'bg-blue-950 text-white shadow-md' : 'text-slate-500 hover:text-blue-950'}`}
-          >
-            📜 Paid History
-          </button>
+          <button onClick={() => setActiveTab('unpaid')} className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${activeTab === 'unpaid' ? 'bg-blue-950 text-white shadow-md' : 'text-slate-500 hover:text-blue-950'}`}>⏳ Unpaid Due</button>
+          <button onClick={() => setActiveTab('history')} className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${activeTab === 'history' ? 'bg-blue-950 text-white shadow-md' : 'text-slate-500 hover:text-blue-950'}`}>📜 Paid History</button>
         </div>
 
-        <div className="bg-white rounded-[2.5rem] shadow-xl overflow-hidden border border-slate-100">
+        <div className="bg-white rounded-[2.5rem] shadow-xl overflow-hidden border border-slate-100 space-y-8 p-2">
           {activeTab === 'unpaid' ? (
-            <table className="w-full text-left border-collapse">
-              <thead className="bg-slate-900 text-white">
-                <tr className="text-[10px] font-black uppercase tracking-widest">
-                  <th className="p-7">Staff Member</th>
-                  <th className="p-7 text-center">Unpaid Jobs</th>
-                  <th className="p-7 text-right">Commission Due</th>
-                  <th className="p-7 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {loading ? (
-                  <tr><td colSpan="4" className="p-20 text-center font-black text-slate-300 uppercase tracking-widest animate-pulse">Syncing Unpaid Queue...</td></tr>
-                ) : report.length === 0 ? (
-                  <tr><td colSpan="4" className="p-20 text-center font-bold text-slate-400 italic text-center uppercase tracking-wider text-xs">No pending payouts found for this period.</td></tr>
-                ) : report.map((staff) => (
-                  <tr key={staff.id} className="hover:bg-blue-50/30 transition-colors">
-                    <td className="p-7">
-                      <p className="font-black text-blue-950 text-sm uppercase tracking-tight">{staff.name}</p>
-                      <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">{staff.email}</p>
-                    </td>
-                    <td className="p-7 text-center">
-                      <span className="font-black text-blue-600 bg-blue-50 px-4 py-1.5 rounded-full text-[10px] uppercase">{staff.jobs} Jobs</span>
-                    </td>
-                    <td className="p-7 text-right font-black text-2xl text-blue-950 tracking-tighter">₦{staff.total_unpaid.toLocaleString()}</td>
-                    <td className="p-7 text-right">
-                      <button 
-                        onClick={() => handlePayout(staff)}
-                        disabled={processingId === staff.id}
-                        className="bg-green-500 text-white px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-black transition-all shadow-lg shadow-green-100 disabled:bg-slate-200 disabled:shadow-none"
-                      >
-                        {processingId === staff.id ? 'Processing...' : 'Mark as Paid'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <>
+              {/* LEDGER AREA 1: STANDARD STAFF */}
+              <div>
+                <div className="p-6 bg-slate-900 text-white font-black text-xs uppercase tracking-widest rounded-t-2xl">Standard Staff Commissions Due</div>
+                <table className="w-full text-left border-collapse">
+                  <tbody className="divide-y divide-slate-100">
+                    {loading ? (
+                      <tr><td className="p-10 text-center font-black text-slate-300 uppercase tracking-widest animate-pulse">Syncing...</td></tr>
+                    ) : report.length === 0 ? (
+                      <tr><td className="p-10 text-center text-slate-400 italic text-xs uppercase">No basic entries found.</td></tr>
+                    ) : report.map((staff) => (
+                      <tr key={staff.id} className="hover:bg-blue-50/30 transition-colors">
+                        <td className="p-7">
+                          <p className="font-black text-blue-950 text-sm uppercase">{staff.name}</p>
+                          <p className="text-[9px] text-slate-400 font-bold uppercase">{staff.email}</p>
+                        </td>
+                        <td className="p-7 text-center"><span className="font-black text-blue-600 bg-blue-50 px-4 py-1.5 rounded-full text-[10px] uppercase">{staff.jobs} Jobs</span></td>
+                        <td className="p-7 text-right font-black text-xl text-blue-950">₦{staff.total_unpaid.toLocaleString()}</td>
+                        <td className="p-7 text-right">
+                          <button onClick={() => handlePayout(staff)} disabled={processingId === staff.id} className="bg-green-500 text-white px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-black transition-all">Payout</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* 🚀 LEDGER AREA 2: SUPERVISORS OVERHEAD MODULE */}
+              <div className="mt-8">
+                <div className="p-6 bg-amber-500 text-blue-950 font-black text-xs uppercase tracking-widest rounded-t-2xl border-t-2 border-blue-950">Supervisor 2.5% Management Override Ledger</div>
+                <table className="w-full text-left border-collapse">
+                  <tbody className="divide-y divide-slate-100">
+                    {loading ? (
+                      <tr><td className="p-10 text-center font-black text-slate-300 uppercase tracking-widest animate-pulse">Syncing...</td></tr>
+                    ) : supervisorReport.length === 0 ? (
+                      <tr><td className="p-10 text-center text-slate-400 italic text-xs uppercase">No supervisor override metrics currently outstanding.</td></tr>
+                    ) : supervisorReport.map((sup) => (
+                      <tr key={sup.id} className="hover:bg-amber-50/30 transition-colors">
+                        <td className="p-7">
+                          <p className="font-black text-blue-950 text-sm uppercase">{sup.name} <span className="text-[9px] bg-blue-950 text-white px-2 py-0.5 rounded ml-2">SUPERVISOR</span></p>
+                          <p className="text-[9px] text-slate-400 font-bold uppercase">{sup.email}</p>
+                        </td>
+                        <td className="p-7 text-center"><span className="font-black text-amber-700 bg-amber-50 px-4 py-1.5 rounded-full text-[10px] uppercase">{sup.jobs} Supervised Jobs</span></td>
+                        <td className="p-7 text-right table-cell font-black text-xl text-amber-600">₦{sup.total_unpaid.toLocaleString()}</td>
+                        <td className="p-7 text-right">
+                          <button onClick={() => handleSupervisorPayout(sup)} disabled={processingId === `sup-${sup.id}`} className="bg-blue-950 text-white px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-amber-500 hover:text-blue-950 transition-all shadow-md">Clear Override</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           ) : (
             <table className="w-full text-left border-collapse">
               <thead className="bg-purple-950 text-white">
                 <tr className="text-[10px] font-black uppercase tracking-widest">
                   <th className="p-7">Cleared Student Task</th>
-                  <th className="p-7">Disbursed To</th>
-                  <th className="p-7 text-right">Amount Disbursed</th>
+                  <th className="p-7">Type</th>
+                  <th className="p-7 text-right">Settlement Metrics</th>
                   <th className="p-7 text-right">Clearing Date</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-50">
-                {loading ? (
-                  <tr><td colSpan="4" className="p-20 text-center font-black text-slate-300 uppercase tracking-widest animate-pulse">Syncing Payment Archives...</td></tr>
-                ) : paymentHistory.length === 0 ? (
-                  <tr><td colSpan="4" className="p-20 text-center font-bold text-slate-400 italic text-center uppercase tracking-wider text-xs">No historical payouts archived for this period.</td></tr>
-                ) : paymentHistory.map((item) => (
-                  <tr key={item.id} className="hover:bg-purple-50/20 transition-colors">
-                    <td className="p-7">
-                      <p className="font-black text-slate-800 text-sm uppercase tracking-tight">{item.full_name}</p>
-                      <p className="text-[9px] text-purple-600 font-bold uppercase tracking-widest">{item.services?.service_name || 'Registration Service'}</p>
-                    </td>
-                    <td className="p-7">
-                      <p className="font-black text-blue-950 text-xs uppercase tracking-tight">{item.profiles?.full_name || 'System Sync'}</p>
-                      <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">{item.profiles?.email}</p>
-                    </td>
-                    <td className="p-7 text-right font-black text-xl text-green-600 tracking-tighter">+₦{Number(item.staff_commission || 0).toLocaleString()}</td>
-                    <td className="p-7 text-right text-xs font-bold text-slate-500 uppercase">
-                      {new Date(item.completed_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
-                    </td>
-                  </tr>
-                ))}
+              <tbody className="divide-y divide-slate-100">
+                {paymentHistory.map((item) => {
+                  const profit = Number(item.amount_paid || 0) - Number(item.institution_cost || 0);
+                  let supCut = profit > 0 ? profit * 0.025 : 0;
+                  if (supCut > 17500) supCut = 17500;
+
+                  return (
+                    <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="p-7">
+                        <p className="font-black text-slate-800 text-sm uppercase">{item.full_name}</p>
+                        <p className="text-[9px] text-purple-600 font-bold uppercase">{item.services?.service_name || 'Service Task'}</p>
+                      </td>
+                      <td className="p-7">
+                        <p className="font-black text-blue-950 text-xs uppercase">{item.profiles?.full_name}</p>
+                        <span className="text-[9px] font-bold text-slate-400 uppercase bg-slate-100 px-2 py-0.5 rounded">{item.profiles?.role || 'Staff'}</span>
+                      </td>
+                      <td className="p-7 text-right text-xs font-mono font-bold">
+                        <p className="text-green-600 font-black">Staff Comm: ₦{Number(item.staff_commission || 0).toLocaleString()}</p>
+                        {item.profiles?.role === 'Supervisor' && (
+                          <p className={item.is_supervisor_payout_completed ? "text-blue-600 font-black" : "text-amber-600 font-black"}>
+                            Sup Override: ₦{supCut.toLocaleString()} [{item.is_supervisor_payout_completed ? "PAID" : "UNPAID"}]
+                          </p>
+                        )}
+                      </td>
+                      <td className="p-7 text-right text-xs font-bold text-slate-500 uppercase">
+                        {new Date(item.completed_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           )}

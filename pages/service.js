@@ -11,6 +11,7 @@ export default function ServiceQueue() {
   const [pendingQueue, setPendingQueue] = useState([]) 
   const [activeJobs, setActiveJobs] = useState([])     
   const [stats, setStats] = useState({ completed: 0, commission: 0 })
+  const [supervisorOverhead, setSupervisorOverhead] = useState(0) // 🚀 Supervisor Override State
   
   const [filterMode, setFilterMode] = useState('today') 
   const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0])
@@ -92,9 +93,10 @@ export default function ServiceQueue() {
         .eq('status', 'Started')
         .eq('started_by', sId)
 
+      // 🚀 Pulling cost attributes to support supervisor financial mathematical loops
       let query = supabase
         .from('students')
-        .select('id, staff_commission, consultant_commission, completed_at')
+        .select('id, staff_commission, consultant_commission, completed_at, amount_paid, institution_cost, is_supervisor_payout_completed')
         .eq('completed_by', sId)
         .eq('status', 'Completed')
         .eq('is_deleted', false)
@@ -109,9 +111,22 @@ export default function ServiceQueue() {
       const { data: completedData } = await query
       let totalComm = completedData?.reduce((acc, job) => acc + Number(job.staff_commission || 0) + Number(job.consultant_commission || 0), 0) || 0
 
+      // 🚀 Compute Capped 2.5% Supervisor Override Balance dynamically
+      let accumulatedOverhead = 0
+      completedData?.forEach(job => {
+        if (job.is_supervisor_payout_completed) return
+        const netProfit = Number(job.amount_paid || 0) - Number(job.institution_cost || 0)
+        if (netProfit > 0) {
+          let cut = netProfit * 0.025
+          if (cut > 17500) cut = 17500
+          accumulatedOverhead += cut
+        }
+      })
+
       setPendingQueue(pendingData || [])
       setActiveJobs(activeData || [])
       setStats({ completed: completedData?.length || 0, commission: totalComm })
+      setSupervisorOverhead(accumulatedOverhead)
     } catch (err) {
       console.error("Data Fetch Error:", err.message)
     }
@@ -265,7 +280,6 @@ export default function ServiceQueue() {
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em]">{userProfile.name} • {userProfile.role}</p>
           </div>
           <div className="flex items-center gap-3">
-            {/* 🚀 SUPERVISOR ACTION BUTTONS BLOCK */}
             {['Manager', 'Admin', 'Account', 'Supervisor'].includes(userProfile.role) && (
               <Link href="/supervision-inbox">
                 <span className="px-5 py-2 border-2 border-amber-950 bg-amber-500 text-blue-950 rounded-full text-[10px] font-black uppercase tracking-wider cursor-pointer hover:bg-black hover:text-white transition-all shadow-[2px_2px_0px_0px_rgba(26,54,93,1)]">
@@ -289,8 +303,8 @@ export default function ServiceQueue() {
           </div>
         </header>
 
-        {/* STATS CARDS */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        {/* 🚀 STATS CARDS GENERATOR GRID */}
+        <div className={`grid grid-cols-1 ${userProfile.role === 'Supervisor' ? 'md:grid-cols-4' : 'md:grid-cols-3'} gap-4 mb-6`}>
           <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
             <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Jobs ({filterMode})</p>
             <h2 className="text-4xl font-black text-blue-950 tracking-tighter">{stats.completed}</h2>
@@ -305,6 +319,15 @@ export default function ServiceQueue() {
             <p className="text-[10px] font-black text-blue-600 uppercase mb-2 tracking-widest">Commission</p>
             <h2 className="text-4xl font-black tracking-tighter text-blue-600">₦{stats.commission.toLocaleString()}</h2>
           </div>
+
+          {/* 🚀 NEW: CAPPED SUPERVISOR OVERRIDE METRICS DISPLAY BLOCK CARD */}
+          {userProfile.role === 'Supervisor' && (
+            <div className="bg-white p-8 rounded-[2.5rem] border-4 border-amber-500 shadow-sm bg-gradient-to-br from-amber-50/50 to-white">
+              <p className="text-[10px] font-black text-amber-600 uppercase mb-2 tracking-widest">⚡ Supervisor Commission ({filterMode})</p>
+              <h2 className="text-4xl font-black tracking-tighter text-amber-600">₦{supervisorOverhead.toLocaleString()}</h2>
+              <p className="text-[8px] font-mono text-slate-400 mt-2 uppercase tracking-tight">* Capped at ₦17,500 max per individual task</p>
+            </div>
+          )}
 
           <Link href="/payment-wallet">
             <div className="bg-blue-900 p-8 rounded-[2.5rem] text-white shadow-2xl shadow-blue-900/20 cursor-pointer hover:scale-[1.02] transition-all group overflow-hidden">
@@ -331,8 +354,6 @@ export default function ServiceQueue() {
             </div>
           </Link>
         </div>
-
-        {/* ✂️ REMOVED THE EMBEDDED MONITORING INBOX SYSTEM FROM HERE TO SHRINK THE LAYOUT */}
 
         {/* ACTIVE WORKLIST */}
         {activeJobs.length > 0 && (
