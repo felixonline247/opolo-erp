@@ -9,6 +9,11 @@ export default function Settings() {
   const [editingId, setEditingId] = useState(null)
   const [editingStaffId, setEditingStaffId] = useState(null) 
   
+  // Password Reset State Machine Parameters
+  const [resettingUserId, setResettingUserId] = useState(null)
+  const [newPasswordValue, setNewPasswordValue] = useState('')
+  const [resetLoading, setResetLoading] = useState(false)
+
   // SMS Template State
   const [smsTemplate, setSmsTemplate] = useState('')
   const [savingTemplate, setSavingTemplate] = useState(false)
@@ -134,6 +139,39 @@ export default function Settings() {
       alert(editingStaffId ? "Staff configuration metrics saved successfully!" : "Staff member successfully pre-registered!");
       clearStaffForm()
       fetchStaff()
+    }
+  }
+
+  // 🚀 NEXT.JS BACKEND OVERRIDE RESET CALL ACTION
+  const executeMasterPasswordReset = async (userId) => {
+    if (!newPasswordValue.trim() || newPasswordValue.length < 6) {
+      return alert("Password parameters invalid. Minimum 6 alpha-numeric characters required.")
+    }
+    
+    setResetLoading(true)
+    try {
+      const response = await fetch('/api/admin-reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          auth_user_id: userId,
+          new_password: newPasswordValue.trim()
+        })
+      })
+
+      const outcome = await response.json()
+
+      if (response.ok) {
+        alert(outcome.message)
+        setResettingUserId(null)
+        setNewPasswordValue('')
+      } else {
+        alert("Reset Aborted: " + outcome.message)
+      }
+    } catch (err) {
+      alert("System loop connection loss error: " + err.message)
+    } finally {
+      setResetLoading(false)
     }
   }
 
@@ -285,7 +323,7 @@ export default function Settings() {
                 <select className="w-full p-4 rounded-xl border-none outline-none text-sm font-bold bg-blue-900 text-white" value={staffData.role} onChange={(e) => setStaffData({...staffData, role: e.target.value})}>
                   <option value="Front Desk">Front Desk</option>
                   <option value="Service Staff">Service Staff</option>
-                  <option value="Supervisor">Supervisor</option> {/* 🚀 UPDATED OPTION FIELD */}
+                  <option value="Supervisor">Supervisor</option>
                   <option value="Account">Account Officer</option>
                   <option value="Consultant">Consultant (VIP)</option>
                   <option value="Partner Agent">Partner Agent (B2B)</option>
@@ -321,16 +359,16 @@ export default function Settings() {
             </form>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
             {staff.map((member, idx) => (
-              <div key={member.id || `staff-${idx}`} className="p-6 bg-slate-50 border border-slate-100 rounded-2xl flex justify-between items-center">
+              <div key={member.id || `staff-${idx}`} className="p-6 bg-slate-50 border border-slate-100 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div className="overflow-hidden">
                   <p className="font-black text-blue-950 uppercase text-xs truncate">{member.full_name || 'Awaiting Signup'}</p>
                   <p className="text-[10px] text-slate-400 font-bold uppercase mb-2">{member.email}</p>
                   <div className="flex flex-wrap gap-2 items-center">
                     <span className={`text-[8px] font-black px-2 py-1 rounded-md uppercase tracking-widest ${
                       member.role === 'Manager' ? 'bg-blue-900 text-white' : 
-                      member.role === 'Supervisor' ? 'bg-indigo-900 text-white' : /* 🚀 UPDATED LIST STYLE VIEW BADGE */
+                      member.role === 'Supervisor' ? 'bg-indigo-900 text-white' : 
                       member.role === 'Consultant' ? 'bg-purple-900 text-white' : 
                       member.role === 'Partner Agent' ? 'bg-purple-600 text-white' : 
                       'bg-slate-200 text-slate-600'
@@ -349,27 +387,67 @@ export default function Settings() {
                   </div>
                 </div>
                 
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button 
-                    onClick={() => {
-                      setEditingStaffId(member.id);
-                      setStaffData({
-                        email: member.email,
-                        full_name: member.full_name || '',
-                        role: member.role || 'Service Staff',
-                        commission_type: member.commission_type || 'fixed',
-                        commission_value: member.commission_value || 0,
-                        vip_auth_code: member.vip_auth_code || '0000'
-                      });
-                    }}
-                    className="text-[10px] font-black text-blue-600 uppercase hover:underline p-1"
-                  >
-                    Edit
-                  </button>
-                  <span className="text-slate-300 text-xs font-black">|</span>
-                  <button onClick={() => removeStaff(member.email)} className="text-[10px] font-black text-red-400 hover:text-red-600 uppercase p-1">
-                    Remove
-                  </button>
+                {/* ACTIONS CONTROLS CONSOLE TRACK */}
+                <div className="w-full sm:w-auto flex flex-col items-end gap-2">
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button 
+                      onClick={() => {
+                        setEditingStaffId(member.id);
+                        setStaffData({
+                          email: member.email,
+                          full_name: member.full_name || '',
+                          role: member.role || 'Service Staff',
+                          commission_type: member.commission_type || 'fixed',
+                          commission_value: member.commission_value || 0,
+                          vip_auth_code: member.vip_auth_code || '0000'
+                        });
+                      }}
+                      className="text-[10px] font-black text-blue-600 uppercase hover:underline p-1"
+                    >
+                      Edit
+                    </button>
+                    
+                    {/* 🚀 TOGGLE INLINE MASTER OVERRIDE INPUT CONTAINER */}
+                    {member.id && (
+                      <>
+                        <span className="text-slate-300 text-xs font-black">|</span>
+                        <button 
+                          onClick={() => {
+                            setResettingUserId(resettingUserId === member.id ? null : member.id);
+                            setNewPasswordValue('');
+                          }}
+                          className="text-[10px] font-black text-amber-600 hover:text-amber-800 uppercase p-1"
+                        >
+                          {resettingUserId === member.id ? 'Cancel Reset' : 'Reset Password'}
+                        </button>
+                      </>
+                    )}
+
+                    <span className="text-slate-300 text-xs font-black">|</span>
+                    <button onClick={() => removeStaff(member.email)} className="text-[10px] font-black text-red-400 hover:text-red-600 uppercase p-1">
+                      Remove
+                    </button>
+                  </div>
+
+                  {/* 🚀 INLINE PASSTHROUGH PASSWORD FIELD FORM PANEL */}
+                  {resettingUserId === member.id && (
+                    <div className="w-full sm:w-64 bg-amber-50 p-3 rounded-xl border border-amber-200 mt-2 flex gap-2 animate-in slide-in-from-right-2 duration-150">
+                      <input 
+                        type="text" 
+                        value={newPasswordValue}
+                        onChange={(e) => setNewPasswordValue(e.target.value)}
+                        placeholder="Enter New Password" 
+                        className="flex-1 p-2 bg-white text-xs font-bold border border-slate-200 rounded-lg outline-none focus:ring-1 focus:ring-amber-500 text-blue-950"
+                      />
+                      <button 
+                        onClick={() => executeMasterPasswordReset(member.id)}
+                        disabled={resetLoading}
+                        className="bg-amber-500 text-blue-950 font-black text-[9px] px-3 py-2 rounded-lg uppercase tracking-wide hover:bg-black hover:text-white disabled:opacity-50"
+                      >
+                        {resetLoading ? '...' : 'Save'}
+                      </button>
+                    </div>
+                  )}
                 </div>
 
               </div>
