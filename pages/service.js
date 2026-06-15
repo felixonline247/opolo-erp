@@ -11,11 +11,17 @@ export default function ServiceQueue() {
   const [pendingQueue, setPendingQueue] = useState([]) 
   const [activeJobs, setActiveJobs] = useState([])     
   const [stats, setStats] = useState({ completed: 0, commission: 0 })
-  const [supervisorOverhead, setSupervisorOverhead] = useState(0) // 🚀 Supervisor Override State
+  const [supervisorOverhead, setSupervisorOverhead] = useState(0)
   
+  // Main Date Filter State (For Personal Staff Commissions)
   const [filterMode, setFilterMode] = useState('today') 
   const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0])
   const [queueSearch, setQueueSearch] = useState('') 
+
+  // 🚀 Independent Supervisor Localized Date Filter States
+  const [supFilterMode, setSupFilterMode] = useState('month') // Default to Month for overhead tracking
+  const [supStartDate, setSupStartDate] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0])
+  const [supEndDate, setSupEndDate] = useState(new Date().toISOString().split('T')[0])
 
   const router = useRouter()
 
@@ -23,6 +29,7 @@ export default function ServiceQueue() {
     checkServiceAccess()
   }, [])
 
+  // 🚀 Hook triggered by BOTH personal controls and supervisor metric dependencies
   useEffect(() => {
     if (!userProfile.id) return
 
@@ -42,7 +49,7 @@ export default function ServiceQueue() {
     return () => {
       supabase.removeChannel(queueChannel)
     }
-  }, [filterMode, customDate, userProfile.id])
+  }, [filterMode, customDate, supFilterMode, supStartDate, supEndDate, userProfile.id])
 
   const checkServiceAccess = async () => {
     try {
@@ -78,6 +85,20 @@ export default function ServiceQueue() {
     }
   }
 
+  // 🚀 Helper utility to instantly map out the supervisor calendar range arrays locally
+  const applySupervisorRangePreset = (mode) => {
+    setSupFilterMode(mode)
+    const now = new Date()
+    let start = new Date()
+
+    if (mode === 'today') start = new Date(now.setHours(0, 0, 0, 0))
+    if (mode === 'week') start.setDate(now.getDate() - 7)
+    if (mode === 'month') start = new Date(now.getFullYear(), now.getMonth(), 1)
+
+    setSupStartDate(start.toISOString().split('T')[0])
+    setSupEndDate(new Date().toISOString().split('T')[0])
+  }
+
   const fetchQueueAndStats = async (sId) => {
     try {
       const { data: pendingData } = await supabase
@@ -93,39 +114,62 @@ export default function ServiceQueue() {
         .eq('status', 'Started')
         .eq('started_by', sId)
 
-      // 🚀 Pulling cost attributes to support supervisor financial mathematical loops
-      let query = supabase
+      // 1. Compile Personal Staff Commission Array
+      let personalQuery = supabase
         .from('students')
-        .select('id, staff_commission, consultant_commission, completed_at, amount_paid, institution_cost, is_supervisor_payout_completed')
+        .select('id, staff_commission, consultant_commission, completed_at')
         .eq('completed_by', sId)
         .eq('status', 'Completed')
         .eq('is_deleted', false)
 
       if (filterMode === 'today') {
         const today = new Date().toISOString().split('T')[0]
-        query = query.gte('completed_at', `${today}T00:00:00`).lte('completed_at', `${today}T23:59:59`)
+        personalQuery = personalQuery.gte('completed_at', `${today}T00:00:00`).lte('completed_at', `${today}T23:59:59`)
       } else if (filterMode === 'custom') {
-        query = query.gte('completed_at', `${customDate}T00:00:00`).lte('completed_at', `${customDate}T23:59:59`)
+        personalQuery = personalQuery.gte('completed_at', `${customDate}T00:00:00`).lte('completed_at', `${customDate}T23:59:59`)
       }
 
-      const { data: completedData } = await query
-      let totalComm = completedData?.reduce((acc, job) => acc + Number(job.staff_commission || 0) + Number(job.consultant_commission || 0), 0) || 0
+      // 2. COMPILE GLOBAL SUPERVISOR OVERHEAD ARRAY
+      let globalManagerQuery = supabase
+        .from('students')
+        .select('id, completed_at, amount_paid, institution_cost, is_supervisor_payout_completed')
+        .eq('status', 'Completed')
+        .eq('is_deleted', false)
+        .gte('completed_at', `${supStartDate}T00:00:00`)
+        .lte('completed_at', `${supEndDate}T23:59:59`)
 
-      // 🚀 Compute Capped 2.5% Supervisor Override Balance dynamically
+      // 3. 🚀 FETCH DYNAMIC GLOBAL SUPERVISOR OVERRIDE CONFIGURATION VARIABLE
+      const { data: globalSettings } = await supabase
+        .from('settings')
+        .select('supervisor_percentage')
+        .eq('id', 1)
+        .single()
+
+      // Convert configured percentage float value smoothly down to standard math decimal format
+      const calculatedRate = globalSettings?.supervisor_percentage 
+        ? Number(globalSettings.supervisor_percentage) / 100 
+        : 0.025 // Reliable hardcoded 2.5% structural fallback margin
+
+      const { data: completedPersonalData } = await personalQuery
+      const { data: completedGlobalData } = await globalManagerQuery
+
+      let totalComm = completedPersonalData?.reduce((acc, job) => acc + Number(job.staff_commission || 0) + Number(job.consultant_commission || 0), 0) || 0
+
+      // Itemized calculations capped per-row mapping logic utilizing our new calculatedRate variable
       let accumulatedOverhead = 0
-      completedData?.forEach(job => {
+      completedGlobalData?.forEach(job => {
         if (job.is_supervisor_payout_completed) return
         const netProfit = Number(job.amount_paid || 0) - Number(job.institution_cost || 0)
         if (netProfit > 0) {
-          let cut = netProfit * 0.025
-          if (cut > 17500) cut = 17500
+          let cut = netProfit * calculatedRate
+          if (cut > 17500) cut = 17500 
           accumulatedOverhead += cut
         }
       })
 
       setPendingQueue(pendingData || [])
       setActiveJobs(activeData || [])
-      setStats({ completed: completedData?.length || 0, commission: totalComm })
+      setStats({ completed: completedPersonalData?.length || 0, commission: totalComm })
       setSupervisorOverhead(accumulatedOverhead)
     } catch (err) {
       console.error("Data Fetch Error:", err.message)
@@ -270,10 +314,13 @@ export default function ServiceQueue() {
     </div>
   )
 
+  const isPrivilegedRole = ['Supervisor', 'Manager', 'Admin', 'Account'].includes(userProfile.role);
+
   return (
     <div className="min-h-screen bg-slate-50 font-sans p-4 md:p-12 relative overflow-x-hidden text-blue-950">
       <div className="max-w-6xl mx-auto">
         
+        {/* TOP LEVEL GLOBAL HEADER */}
         <header className="flex justify-between items-start mb-8">
           <div>
             <h1 className="text-2xl md:text-4xl font-black text-blue-950 uppercase italic tracking-tighter">Service Station</h1>
@@ -303,39 +350,74 @@ export default function ServiceQueue() {
           </div>
         </header>
 
-        {/* 🚀 STATS CARDS GENERATOR GRID */}
-        <div className={`grid grid-cols-1 ${userProfile.role === 'Supervisor' ? 'md:grid-cols-4' : 'md:grid-cols-3'} gap-4 mb-6`}>
-          <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
-            <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Jobs ({filterMode})</p>
-            <h2 className="text-4xl font-black text-blue-950 tracking-tighter">{stats.completed}</h2>
-            <div className="mt-6 flex gap-2">
+        {/* FINANCIAL STATS CARDS GRID MATRIX */}
+        <div className={`grid grid-cols-1 ${isPrivilegedRole ? 'lg:grid-cols-12' : 'md:grid-cols-3'} gap-4 mb-6`}>
+          
+          {/* CARD 1: PERSONAL JOBS COUNTER */}
+          <div className={`${isPrivilegedRole ? 'lg:col-span-3' : ''} bg-white p-6 rounded-[2.5rem] border border-slate-200 shadow-sm flex flex-col justify-between`}>
+            <div>
+              <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Your Jobs ({filterMode})</p>
+              <h2 className="text-4xl font-black text-blue-950 tracking-tighter">{stats.completed}</h2>
+            </div>
+            <div className="mt-6 flex gap-1">
                {['today', 'total', 'custom'].map(m => (
-                 <button key={m} onClick={() => setFilterMode(m)} className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${filterMode === m ? 'bg-blue-900 text-white shadow-lg' : 'bg-slate-100 text-slate-400'}`}>{m}</button>
+                 <button key={m} onClick={() => setFilterMode(m)} className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all ${filterMode === m ? 'bg-blue-900 text-white shadow-md' : 'bg-slate-100 text-slate-400'}`}>{m}</button>
                ))}
             </div>
           </div>
 
-          <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
-            <p className="text-[10px] font-black text-blue-600 uppercase mb-2 tracking-widest">Commission</p>
+          {/* CARD 2: PERSONAL COMMISSIONS EARNED */}
+          <div className={`${isPrivilegedRole ? 'lg:col-span-3' : ''} bg-white p-6 rounded-[2.5rem] border border-slate-200 shadow-sm flex flex-col justify-center`}>
+            <p className="text-[10px] font-black text-blue-600 uppercase mb-2 tracking-widest">Your Commission</p>
             <h2 className="text-4xl font-black tracking-tighter text-blue-600">₦{stats.commission.toLocaleString()}</h2>
           </div>
 
-          {/* 🚀 NEW: CAPPED SUPERVISOR OVERRIDE METRICS DISPLAY BLOCK CARD */}
-          {userProfile.role === 'Supervisor' && (
-            <div className="bg-white p-8 rounded-[2.5rem] border-4 border-amber-500 shadow-sm bg-gradient-to-br from-amber-50/50 to-white">
-              <p className="text-[10px] font-black text-amber-600 uppercase mb-2 tracking-widest">⚡ Supervisor Commission ({filterMode})</p>
-              <h2 className="text-4xl font-black tracking-tighter text-amber-600">₦{supervisorOverhead.toLocaleString()}</h2>
-              <p className="text-[8px] font-mono text-slate-400 mt-2 uppercase tracking-tight">* Capped at ₦17,500 max per individual task</p>
+          {/* CARD 3: DECOUPLED SUPERVISOR DYNAMIC CUT OVERHEAD PANEL BLOCK */}
+          {isPrivilegedRole && (
+            <div className="lg:col-span-4 bg-white p-6 rounded-[2.5rem] border-4 border-amber-500 shadow-sm bg-gradient-to-br from-amber-50/20 to-white flex flex-col justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest">⚡ Company Supervisor Cut</p>
+                <h2 className="text-4xl font-black tracking-tighter text-amber-600 mt-1">₦{supervisorOverhead.toLocaleString()}</h2>
+                
+                <p className="text-[8px] font-mono font-bold text-slate-400 uppercase mt-1">
+                  Interval: <span className="text-blue-950">{supFilterMode}</span> ({new Date(supStartDate).toLocaleDateString('en-GB', {day:'numeric', month:'short'})} - {new Date(supEndDate).toLocaleDateString('en-GB', {day:'numeric', month:'short'})})
+                </p>
+              </div>
+
+              <div className="space-y-3 pt-2 border-t border-dashed border-amber-200">
+                <div className="flex flex-wrap gap-1">
+                  {['today', 'week', 'month', 'custom'].map(mode => (
+                    <button
+                      key={mode}
+                      onClick={() => mode === 'custom' ? setSupFilterMode('custom') : applySupervisorRangePreset(mode)}
+                      className={`px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-wider transition-all ${
+                        supFilterMode === mode ? 'bg-amber-500 text-blue-950 font-black shadow-sm' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                      }`}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+
+                {supFilterMode === 'custom' && (
+                  <div className="flex items-center gap-1 bg-amber-50 p-1.5 rounded-xl border border-amber-200 animate-in slide-in-from-top-2 duration-150">
+                    <input type="date" value={supStartDate} onChange={(e) => setSupStartDate(e.target.value)} className="text-[8px] font-black font-mono bg-transparent outline-none text-blue-950 uppercase w-24" />
+                    <span className="text-amber-400 font-bold text-xs">→</span>
+                    <input type="date" value={supEndDate} onChange={(e) => setSupEndDate(e.target.value)} className="text-[8px] font-black font-mono bg-transparent outline-none text-blue-950 uppercase w-24" />
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
-          <Link href="/payment-wallet">
-            <div className="bg-blue-900 p-8 rounded-[2.5rem] text-white shadow-2xl shadow-blue-900/20 cursor-pointer hover:scale-[1.02] transition-all group overflow-hidden">
-              <p className="text-[10px] font-black uppercase opacity-60 mb-2 tracking-widest">Wallet</p>
-              <h2 className={`text-4xl font-black tracking-tighter ${userProfile.balance < 1000 ? 'text-red-400' : 'text-white'}`}>
+          {/* CARD 4: CENTRAL AGENCY WALLET PORTAL LINK */}
+          <Link href="/payment-wallet" className={`${isPrivilegedRole ? 'lg:col-span-2' : ''}`}>
+            <div className="bg-blue-900 p-6 rounded-[2.5rem] text-white shadow-2xl shadow-blue-900/20 cursor-pointer hover:scale-[1.02] transition-all group overflow-hidden h-full flex flex-col justify-center">
+              <p className="text-[10px] font-black uppercase opacity-60 mb-1 tracking-widest">Wallet</p>
+              <h2 className={`text-3xl font-black tracking-tighter ${userProfile.balance < 1000 ? 'text-red-400' : 'text-white'}`}>
                 ₦{userProfile.balance.toLocaleString()}
               </h2>
-              <div className="mt-6 text-[9px] font-black uppercase tracking-widest opacity-80 group-hover:opacity-100">Top Up →</div>
+              <div className="mt-4 text-[8px] font-black uppercase tracking-widest opacity-80 group-hover:opacity-100">Top Up →</div>
             </div>
           </Link>
         </div>

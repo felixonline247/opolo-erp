@@ -14,9 +14,11 @@ export default function Settings() {
   const [newPasswordValue, setNewPasswordValue] = useState('')
   const [resetLoading, setResetLoading] = useState(false)
 
-  // SMS Template State
+  // SMS Template & Global Business Variable Configurations
   const [smsTemplate, setSmsTemplate] = useState('')
   const [savingTemplate, setSavingTemplate] = useState(false)
+  const [supervisorPercentage, setSupervisorPercentage] = useState(2.5) // 🚀 SUPERVISOR PERCENTAGE VARIABLE STATE
+  const [savingPercentage, setSavingPercentage] = useState(false)
 
   const [formData, setFormData] = useState({ 
     service_name: '', 
@@ -66,9 +68,13 @@ export default function Settings() {
   }
 
   const fetchSMSTemplate = async () => {
-    const { data } = await supabase.from('settings').select('sms_template').eq('id', 1).single()
+    // 🚀 UPDATED LOOKUP: Extracts both template content strings and global supervisor percentage fields together
+    const { data } = await supabase.from('settings').select('sms_template, supervisor_percentage').eq('id', 1).single()
     if (data) {
       setSmsTemplate(data.sms_template)
+      if (data.supervisor_percentage !== undefined) {
+        setSupervisorPercentage(data.supervisor_percentage)
+      }
     }
   }
 
@@ -85,6 +91,27 @@ export default function Settings() {
       alert("SMS Template updated successfully!")
     }
     setSavingTemplate(false)
+  }
+
+  // 🚀 NEW: SAVE ACTION METHOD FOR THE MANAGER CONTROLLER OVERRIDE RATIO VALUE
+  const handleUpdateSupervisorPercentage = async () => {
+    const dynamicRateValue = parseFloat(supervisorPercentage)
+    if (isNaN(dynamicRateValue) || dynamicRateValue < 0) {
+      return alert("Please enter a valid positive percentage figure parameter.")
+    }
+
+    setSavingPercentage(true)
+    const { error } = await supabase
+      .from('settings')
+      .update({ supervisor_percentage: dynamicRateValue })
+      .eq('id', 1)
+
+    if (error) {
+      alert("Failed to update percentage constraints: " + error.message)
+    } else {
+      alert(`Supervisor Override Payout standard updated to ${dynamicRateValue}% across all operation files successfully!`)
+    }
+    setSavingPercentage(false)
   }
 
   const handleServiceSubmit = async (e) => {
@@ -142,7 +169,6 @@ export default function Settings() {
     }
   }
 
-  // 🚀 NEXT.JS BACKEND OVERRIDE RESET CALL ACTION
   const executeMasterPasswordReset = async (userId) => {
     if (!newPasswordValue.trim() || newPasswordValue.length < 6) {
       return alert("Password parameters invalid. Minimum 6 alpha-numeric characters required.")
@@ -208,32 +234,61 @@ export default function Settings() {
           <Link href="/dashboard" className="text-xs font-black text-slate-400 hover:text-blue-600 uppercase tracking-widest">← Back to Command</Link>
         </div>
 
-        {/* SECTION: BROADCAST & COMMUNICATION */}
+        {/* SECTION 1: BROADCAST & COMMUNICATION & MANAGEMENT RATE CONTROLS */}
         <div className="mb-20">
-          <h3 className="text-[10px] font-black text-blue-900 uppercase tracking-[0.3em] mb-6 ml-2">Communication Center</h3>
+          <h3 className="text-[10px] font-black text-blue-900 uppercase tracking-[0.3em] mb-6 ml-2">Communication & Strategy Center</h3>
           
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="md:col-span-2 bg-amber-50 p-8 rounded-[2rem] border border-amber-100 shadow-sm">
-              <h2 className="text-xs font-black text-amber-600 uppercase mb-4">Global SMS Alert Template</h2>
-              <textarea 
-                className="w-full p-4 rounded-xl border-none ring-1 ring-amber-200 focus:ring-2 focus:ring-amber-500 outline-none text-sm font-bold bg-white text-blue-950"
-                rows="3"
-                value={smsTemplate}
-                onChange={(e) => setSmsTemplate(e.target.value)}
-                placeholder="Example: Hello {name}, your {service} is ready for pickup at Opolo CBT Resort."
-              />
-              <div className="flex flex-col mt-4 gap-2">
-                <p className="text-[9px] font-black text-amber-500 uppercase">
-                  Available Tags: <span className="text-blue-900">{"{name}"}</span>, <span className="text-blue-900">{"{service}"}</span>
-                </p>
-                <button 
-                  onClick={handleUpdateTemplate}
-                  disabled={savingTemplate}
-                  className="w-full bg-blue-950 text-white px-8 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-black transition disabled:opacity-50"
-                >
-                  {savingTemplate ? 'Saving...' : 'Update Template'}
-                </button>
+            <div className="md:col-span-2 bg-amber-50 p-8 rounded-[2rem] border border-amber-100 shadow-sm space-y-6">
+              
+              {/* GLOBAL SMS WORKBENCH CONTAINER */}
+              <div>
+                <h2 className="text-xs font-black text-amber-600 uppercase mb-3">Global SMS Alert Template</h2>
+                <textarea 
+                  className="w-full p-4 rounded-xl border-none ring-1 ring-amber-200 focus:ring-2 focus:ring-amber-500 outline-none text-sm font-bold bg-white text-blue-950"
+                  rows="2"
+                  value={smsTemplate}
+                  onChange={(e) => setSmsTemplate(e.target.value)}
+                  placeholder="Example: Hello {name}, your {service} is ready for pickup at Opolo CBT Resort."
+                />
+                <div className="flex flex-col mt-2 gap-2">
+                  <p className="text-[9px] font-black text-amber-500 uppercase">Available Tags: {"{name}"}, {"{service}"}</p>
+                  <button onClick={handleUpdateTemplate} disabled={savingTemplate} className="w-full bg-blue-950 text-white px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-black transition disabled:opacity-50">
+                    {savingTemplate ? 'Saving...' : 'Update SMS Configuration'}
+                  </button>
+                </div>
               </div>
+
+              {/* 🚀 NEW: NEO-BRUTALIST MANAGEMENT SUPERVISOR RATE CONTROLLER */}
+              <div className="pt-4 border-t border-dashed border-amber-200">
+                <h2 className="text-xs font-black text-blue-950 uppercase mb-2">⚡ Supervisor Management Override Commission Rate</h2>
+                <div className="flex gap-2 max-w-sm">
+                  <div className="relative flex-1">
+                    <input 
+                      type="number" 
+                      step="0.1" 
+                      min="0"
+                      max="100"
+                      value={supervisorPercentage}
+                      onChange={(e) => setSupervisorPercentage(e.target.value)}
+                      className="w-full p-3 pr-8 rounded-xl border-none ring-1 ring-amber-200 focus:ring-2 focus:ring-blue-950 outline-none text-sm font-black bg-white text-blue-950" 
+                      placeholder="e.g. 2.5"
+                    />
+                    <span className="absolute right-3 top-3.5 text-xs font-black text-slate-400">%</span>
+                  </div>
+                  <button 
+                    onClick={handleUpdateSupervisorPercentage} 
+                    disabled={savingPercentage}
+                    className="bg-blue-900 hover:bg-black text-white px-6 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition shadow-md disabled:opacity-50"
+                  >
+                    {savingPercentage ? 'Updating...' : 'Save Rate'}
+                  </button>
+                </div>
+                <p className="text-[9px] font-bold text-slate-400 uppercase mt-2 leading-tight">
+                  * Changes apply automatically to all un-cleared supervisor balances across the system reports.
+                </p>
+              </div>
+
             </div>
 
             <div className="bg-blue-900 p-8 rounded-[2rem] flex flex-col justify-center items-center text-center shadow-xl shadow-blue-900/20">
@@ -387,7 +442,6 @@ export default function Settings() {
                   </div>
                 </div>
                 
-                {/* ACTIONS CONTROLS CONSOLE TRACK */}
                 <div className="w-full sm:w-auto flex flex-col items-end gap-2">
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <button 
@@ -407,7 +461,6 @@ export default function Settings() {
                       Edit
                     </button>
                     
-                    {/* 🚀 TOGGLE INLINE MASTER OVERRIDE INPUT CONTAINER */}
                     {member.id && (
                       <>
                         <span className="text-slate-300 text-xs font-black">|</span>
@@ -429,7 +482,6 @@ export default function Settings() {
                     </button>
                   </div>
 
-                  {/* 🚀 INLINE PASSTHROUGH PASSWORD FIELD FORM PANEL */}
                   {resettingUserId === member.id && (
                     <div className="w-full sm:w-64 bg-amber-50 p-3 rounded-xl border border-amber-200 mt-2 flex gap-2 animate-in slide-in-from-right-2 duration-150">
                       <input 

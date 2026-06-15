@@ -45,8 +45,18 @@ export default function CommissionReport() {
   const fetchCommissionData = async () => {
     setLoading(true)
     try {
+      // 🚀 FETCH DYNAMIC GLOBAL SETTINGS PERCENTAGE OVERRIDE
+      const { data: globalSettings } = await supabase
+        .from('settings')
+        .select('supervisor_percentage')
+        .eq('id', 1)
+        .single()
+
+      const calculatedRate = globalSettings?.supervisor_percentage 
+        ? Number(globalSettings.supervisor_percentage) / 100 
+        : 0.025 // Standard 2.5% structural baseline fallback
+
       if (activeTab === 'unpaid') {
-        // 🚀 Dynamic Query Modification: Pulling pricing attributes needed for overhead computation matrices
         const { data: jobs, error: jobsError } = await supabase
           .from('students')
           .select(`
@@ -68,7 +78,14 @@ export default function CommissionReport() {
         const { data: profiles } = await supabase.from('profiles').select('id, full_name, email, role')
 
         const profileMap = {}
-        profiles?.forEach(p => { profileMap[p.id] = p })
+        const supervisorProfilesArray = []
+        
+        profiles?.forEach(p => { 
+          profileMap[p.id] = p 
+          if (p.role === 'Supervisor') {
+            supervisorProfilesArray.push(p)
+          }
+        })
 
         // Pure Staff Loop
         const staffGrouped = jobs.reduce((acc, curr) => {
@@ -90,34 +107,36 @@ export default function CommissionReport() {
           return acc
         }, {})
 
-        // 🚀 Isolated Supervisor Override Loop (Runs itemized calculation per row, capped at ₦17,500 maximum)
-        const supervisorGrouped = jobs.reduce((acc, curr) => {
-          if (curr.is_supervisor_payout_completed) return acc
-          const staffId = curr.completed_by 
-          if (!staffId || !profileMap[staffId] || profileMap[staffId].role !== 'Supervisor') return acc
-          
+        // 🚀 CALCULATE GLOBAL OVERHEAD POOL: Process all row items within interval metrics
+        let totalCompanySupervisorUnpaidPool = 0
+        let aggregateSupervisedJobsCount = 0
+
+        jobs.forEach(curr => {
+          if (curr.is_supervisor_payout_completed) return
           const netProfit = Number(curr.amount_paid || 0) - Number(curr.institution_cost || 0)
-          let supervisorCut = 0
           if (netProfit > 0) {
-            supervisorCut = netProfit * 0.025
-            if (supervisorCut > 17500) supervisorCut = 17500 // Ceiling Cap Enforcement
+            let lineOverrideCut = netProfit * calculatedRate
+            if (lineOverrideCut > 17500) lineOverrideCut = 17500 // Ceiling Cap
+            totalCompanySupervisorUnpaidPool += lineOverrideCut
+            aggregateSupervisedJobsCount += 1
           }
+        })
 
-          if (supervisorCut <= 0) return acc
-
-          if (!acc[staffId]) {
-            acc[staffId] = {
-              id: staffId,
-              name: profileMap[staffId].full_name,
-              email: profileMap[staffId].email,
-              jobs: 0,
-              total_unpaid: 0
+        // Distribute the company pool uniformly to all active Supervisor accounts on the dashboard
+        const supervisorGrouped = {}
+        if (totalCompanySupervisorUnpaidPool > 0 && supervisorProfilesArray.length > 0) {
+          const sharePerSupervisor = totalCompanySupervisorUnpaidPool / supervisorProfilesArray.length
+          
+          supervisorProfilesArray.forEach(sup => {
+            supervisorGrouped[sup.id] = {
+              id: sup.id,
+              name: sup.full_name,
+              email: sup.email,
+              jobs: aggregateSupervisedJobsCount, 
+              total_unpaid: sharePerSupervisor
             }
-          }
-          acc[staffId].jobs += 1
-          acc[staffId].total_unpaid += supervisorCut
-          return acc
-        }, {})
+          })
+        }
 
         const staffArray = Object.values(staffGrouped)
         const supervisorArray = Object.values(supervisorGrouped)
@@ -125,7 +144,7 @@ export default function CommissionReport() {
         setReport(staffArray)
         setSupervisorReport(supervisorArray)
         setTotalPayout(staffArray.reduce((sum, item) => sum + item.total_unpaid, 0))
-        setTotalSupervisorPayout(supervisorArray.reduce((sum, item) => sum + item.total_unpaid, 0))
+        setTotalSupervisorPayout(totalCompanySupervisorUnpaidPool)
       } else {
         const { data: pastJobs, error: historyError } = await supabase
           .from('students')
@@ -181,15 +200,14 @@ export default function CommissionReport() {
     }
   }
 
-  // 🚀 Clear Supervisor Overhead Override Function
+  // 🚀 Clear Supervisor Overhead Override Function Company-Wide across the current window
   const handleSupervisorPayout = async (sup) => {
-    if (!confirm(`Mark ₦${sup.total_unpaid.toLocaleString()} Supervisor Override as paid to ${sup.name}?`)) return
+    if (!confirm(`Mark supervisor overhead override pool inside this date range as settled and cleared?`)) return
     setProcessingId(`sup-${sup.id}`)
 
     try {
       const { error: updateError } = await supabase.from('students')
         .update({ is_supervisor_payout_completed: true })
-        .eq('completed_by', sup.id)
         .eq('status', 'Completed')
         .eq('is_supervisor_payout_completed', false) 
         .gte('completed_at', `${startDate}T00:00:00`)
@@ -197,8 +215,8 @@ export default function CommissionReport() {
 
       if (updateError) throw updateError
 
-      await logActivity("Supervisor Payout", `Cleared ₦${sup.total_unpaid.toLocaleString()} Overhead Override to ${sup.name}`)
-      alert("Supervisor Override clear successful!")
+      await logActivity("Supervisor Payout", `Cleared Supervisor Overhead Override pools for active range intervals.`)
+      alert("Supervisor Override clear successful across active range parameters!")
       fetchCommissionData()
     } catch (err) {
       alert("Supervisor payout failure: " + err.message)
@@ -233,16 +251,16 @@ export default function CommissionReport() {
           </div>
         </div>
 
-        {/* 🚀 SPLIT ACCOUNTING SUMMARY CONTAINER CARDS */}
+        {/* SPLIT ACCOUNTING SUMMARY CONTAINER CARDS */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
           <div className="bg-blue-900 rounded-[2rem] p-8 text-white shadow-xl relative overflow-hidden">
             <p className="text-[10px] font-black uppercase opacity-60 tracking-wider mb-2">Standard Staff Unpaid Due</p>
             <h2 className="text-4xl font-black tracking-tighter italic">₦{totalPayout.toLocaleString()}</h2>
           </div>
           
-          {/* 🚀 Pure Supervisor Independent Override Analytics Card Block */}
+          {/* Dynamic Percentage Heading Sub-Card Tracker */}
           <div className="bg-amber-500 rounded-[2rem] p-8 text-blue-950 shadow-xl relative overflow-hidden border-2 border-blue-950 shadow-[4px_4px_0px_0px_rgba(26,54,93,1)]">
-            <p className="text-[10px] font-black uppercase opacity-70 tracking-wider mb-2">⚡ Supervisor 2.5% Override Pool (Capped)</p>
+            <p className="text-[10px] font-black uppercase opacity-70 tracking-wider mb-2">⚡ Supervisor Dynamic Override Pool (Capped)</p>
             <h2 className="text-4xl font-black tracking-tighter italic">₦{totalSupervisorPayout.toLocaleString()}</h2>
           </div>
         </div>
@@ -281,22 +299,22 @@ export default function CommissionReport() {
                 </table>
               </div>
 
-              {/* 🚀 LEDGER AREA 2: SUPERVISORS OVERHEAD MODULE */}
+              {/* LEDGER AREA 2: SUPERVISORS OVERHEAD MODULE */}
               <div className="mt-8">
-                <div className="p-6 bg-amber-500 text-blue-950 font-black text-xs uppercase tracking-widest rounded-t-2xl border-t-2 border-blue-950">Supervisor 2.5% Management Override Ledger</div>
+                <div className="p-6 bg-amber-500 text-blue-950 font-black text-xs uppercase tracking-widest rounded-t-2xl border-t-2 border-blue-950">Supervisor Management Override Ledger</div>
                 <table className="w-full text-left border-collapse">
                   <tbody className="divide-y divide-slate-100">
                     {loading ? (
                       <tr><td className="p-10 text-center font-black text-slate-300 uppercase tracking-widest animate-pulse">Syncing...</td></tr>
                     ) : supervisorReport.length === 0 ? (
-                      <tr><td className="p-10 text-center text-slate-400 italic text-xs uppercase">No supervisor override metrics currently outstanding.</td></tr>
+                      <tr><td className="p-10 text-center text-slate-400 italic text-xs uppercase">No supervisor override metrics currently outstanding inside this window.</td></tr>
                     ) : supervisorReport.map((sup) => (
                       <tr key={sup.id} className="hover:bg-amber-50/30 transition-colors">
                         <td className="p-7">
                           <p className="font-black text-blue-950 text-sm uppercase">{sup.name} <span className="text-[9px] bg-blue-950 text-white px-2 py-0.5 rounded ml-2">SUPERVISOR</span></p>
                           <p className="text-[9px] text-slate-400 font-bold uppercase">{sup.email}</p>
                         </td>
-                        <td className="p-7 text-center"><span className="font-black text-amber-700 bg-amber-50 px-4 py-1.5 rounded-full text-[10px] uppercase">{sup.jobs} Supervised Jobs</span></td>
+                        <td className="p-7 text-center"><span className="font-black text-amber-700 bg-amber-50 px-4 py-1.5 rounded-full text-[10px] uppercase">{sup.jobs} Supervised Queue Tasks</span></td>
                         <td className="p-7 text-right table-cell font-black text-xl text-amber-600">₦{sup.total_unpaid.toLocaleString()}</td>
                         <td className="p-7 text-right">
                           <button onClick={() => handleSupervisorPayout(sup)} disabled={processingId === `sup-${sup.id}`} className="bg-blue-950 text-white px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-amber-500 hover:text-blue-950 transition-all shadow-md">Clear Override</button>
@@ -320,8 +338,8 @@ export default function CommissionReport() {
               <tbody className="divide-y divide-slate-100">
                 {paymentHistory.map((item) => {
                   const profit = Number(item.amount_paid || 0) - Number(item.institution_cost || 0);
-                  let supCut = profit > 0 ? profit * 0.025 : 0;
-                  if (supCut > 17500) supCut = 17500;
+                  let historicalSupCut = profit > 0 ? profit * calculatedRate : 0;
+                  if (historicalSupCut > 17500) historicalSupCut = 17500;
 
                   return (
                     <tr key={item.id} className="hover:bg-slate-50 transition-colors">
@@ -337,7 +355,7 @@ export default function CommissionReport() {
                         <p className="text-green-600 font-black">Staff Comm: ₦{Number(item.staff_commission || 0).toLocaleString()}</p>
                         {item.profiles?.role === 'Supervisor' && (
                           <p className={item.is_supervisor_payout_completed ? "text-blue-600 font-black" : "text-amber-600 font-black"}>
-                            Sup Override: ₦{supCut.toLocaleString()} [{item.is_supervisor_payout_completed ? "PAID" : "UNPAID"}]
+                            Sup Override: ₦{historicalSupCut.toLocaleString()} [{item.is_supervisor_payout_completed ? "PAID" : "UNPAID"}]
                           </p>
                         )}
                       </td>
