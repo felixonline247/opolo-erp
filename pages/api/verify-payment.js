@@ -1,12 +1,23 @@
 import { createClient } from '@supabase/supabase-js'
 
-// Initialize a privileged service instance using environment authorization parameters
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY // Use service role key to bypass RLS policies during recovery actions
-)
+// Hardened Global Initialization Guardrail
+let supabaseAdmin;
+try {
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.error("CRITICAL CONFIGURATION ERROR: Supabase environment credentials are completely missing from your environment variables ledger.");
+  }
+  supabaseAdmin = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+    process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+  )
+} catch (initErr) {
+  console.error("Supabase Client Boot Crash:", initErr.message);
+}
 
 export default async function handler(req, res) {
+  // Always force headers to protect JSON integrity streams
+  res.setHeader('Content-Type', 'application/json')
+
   if (req.method !== 'POST') {
     return res.status(405).json({ message: 'Method execution protocol not allowed.' })
   }
@@ -17,13 +28,19 @@ export default async function handler(req, res) {
     return res.status(400).json({ message: 'Missing transaction execution reference payload parameters.' })
   }
 
+  if (!supabaseAdmin) {
+    return res.status(500).json({ message: 'Database Connection Error: Server environment keys are misconfigured.' })
+  }
+
   try {
     // 1. Verify if the reference token identifier has already been synchronized inside your ledger table
-    const { data: existingStudent } = await supabaseAdmin
+    const { data: existingStudent, error: checkLinkError } = await supabaseAdmin
       .from('students')
       .select('id, full_name, payment_reference')
       .eq('payment_reference', tx_ref)
       .maybeSingle()
+
+    if (checkLinkError) throw new Error(`Supabase query bottleneck: ${checkLinkError.message}`);
 
     if (existingStudent) {
       return res.status(409).json({ 
@@ -32,17 +49,21 @@ export default async function handler(req, res) {
     }
 
     // 2. Query Flutterwave's official validation endpoint using your private environment Secret Key
-    const flwResponse = await fetch(`https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${tx_ref}`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}`
-      }
-    })
+    let flwData;
+    try {
+      const flwResponse = await fetch(`https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${tx_ref}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY || ''}`
+        }
+      })
+      flwData = await flwResponse.json()
+    } catch (netErr) {
+      throw new Error(`Failed to contact Flutterwave payment verification servers: ${netErr.message}`);
+    }
 
-    const flwData = await flwResponse.json()
-
-    // PROTECTION GAURDRAIL FIX: Check if flwData or flwData.data is empty before reading properties to avoid server crashes
+    // PROTECTION GAURDRAIL FIX: Safe property checking validation structure
     if (!flwData || flwData.status !== 'success' || !flwData.data || (flwData.data.status !== 'successful' && flwData.data.status !== 'completed')) {
       const displayMessage = flwData?.message || 'Flutterwave does not register a cleared successful payout session for this transaction reference token.'
       return res.status(422).json({ 
@@ -87,10 +108,7 @@ export default async function handler(req, res) {
     })
 
     if (rpcError) {
-      console.warn("RPC Routine insertion failed or unavailable. Processing direct layout fallback insert...", rpcError.message)
-      
       // Fallback direct insert parameters if RPC parameters lock due to signature differences during metadata lookups
-      // STATE VALUE FIX: Changed from 'Queue Wallet' fallback string to 'Pending' to sync with Version 3.0 workflow mapping
       const { error: insertError } = await supabaseAdmin
         .from('students')
         .insert([{
@@ -101,8 +119,8 @@ export default async function handler(req, res) {
           service_id: finalServiceId,
           agent_id: finalAgentId,
           amount_paid: flwAmount,
-          institution_cost: calculatedInstCost, // Attaches the base institution costs safely for profit accounting
-          status: 'Pending', // Aligns student into collection Inbox queue
+          institution_cost: calculatedInstCost, 
+          status: 'Pending', 
           registration_source: 'Business Center',
           payment_reference: tx_ref,
           payment_gateway: 'Flutterwave',
