@@ -123,7 +123,6 @@ export default function AccountsDashboard() {
 
   const fetchPendingData = async () => {
     try {
-      // Pulls both incoming streams side-by-side inside your collection grid
       const { data, error } = await supabase
         .from('students')
         .select(`
@@ -153,9 +152,21 @@ export default function AccountsDashboard() {
     const { start, end } = timeframe === 'all' ? { start: null, end: null } : getDateRange()
     
     try {
+      // 1. Fetch Dynamic Global Settings for Supervisor Cut Percentage Configuration
+      const { data: globalSettings } = await supabase
+        .from('settings')
+        .select('supervisor_percentage')
+        .eq('id', 1)
+        .single()
+
+      const calculatedRate = globalSettings?.supervisor_percentage 
+        ? Number(globalSettings.supervisor_percentage) / 100 
+        : 0.025 // 2.5% Fallback Rate
+
+      // 2. Build Student Financial Data Queue
       let query = supabase
         .from('students')
-        .select(`amount_paid, institution_cost, staff_commission, consultant_commission, commission_earned, status, registration_source`)
+        .select(`amount_paid, institution_cost, staff_commission, consultant_commission, commission_earned, status, registration_source, completed_at, is_supervisor_payout_completed`)
         .in('status', ['Awaiting Service', 'Started', 'Completed'])
         .eq('is_deleted', false)
 
@@ -167,7 +178,10 @@ export default function AccountsDashboard() {
       if (error) throw error
       
       if (data) {
-        let gross = 0; let remit = 0; let comms = 0; let profit = 0; let agentInflow = 0;
+        let gross = 0; let remit = 0; let comms = 0; let agentInflow = 0;
+        
+        // Group all completed jobs by day to handle the strict ₦17,500 company daily limit ceiling
+        const completedJobsByDay = {}
 
         data.forEach(item => {
           const valPaid = Number(item.amount_paid || 0)
@@ -177,12 +191,53 @@ export default function AccountsDashboard() {
           gross += valPaid
           remit += valInst
           comms += valComm
-          profit += (valPaid - valInst - valComm) 
 
           if (item.registration_source === 'Business Center') {
             agentInflow += valPaid
           }
+
+          // Segregate completed, unpaid supervisor slots into daily calculation arrays
+          if (item.status === 'Completed' && !item.is_supervisor_payout_completed && item.completed_at) {
+            const day = item.completed_at.split('T')[0]
+            if (!completedJobsByDay[day]) {
+              completedJobsByDay[day] = []
+            }
+            completedJobsByDay[day].push(item)
+          }
         })
+
+        // Run sequential chronological calculation tracking for supervisors across unique daily arrays
+        let totalSupervisorCuts = 0
+        Object.keys(completedJobsByDay).forEach(day => {
+          // Sort items from oldest to newest to prioritize earlier transactions
+          completedJobsByDay[day].sort((a, b) => new Date(a.completed_at) - new Date(b.completed_at))
+          
+          let dailyRunningCut = 0
+          completedJobsByDay[day].forEach(item => {
+            const paid = Number(item.amount_paid || 0)
+            const inst = Number(item.institution_cost || 0)
+            const staffComm = Number(item.staff_commission || 0)
+            
+            // MATH RULE 1 UPDATE: Net Margin = Amount Paid - Institution Cost - Staff Commission
+            const netProfitMargin = paid - inst - staffComm
+            
+            if (netProfitMargin > 0) {
+              let cut = netProfitMargin * calculatedRate
+              
+              // MATH RULE 2 UPDATE: Enforce rigid global maximum limit of ₦17,500 daily
+              if (dailyRunningCut + cut > 17500) {
+                cut = 17500 - dailyRunningCut
+              }
+              if (cut < 0) cut = 0
+              
+              dailyRunningCut += cut
+              totalSupervisorCuts += cut
+            }
+          })
+        })
+
+        // Deduct everything perfectly to establish genuine Net Profit
+        const profit = gross - remit - comms - totalSupervisorCuts
 
         setStats({ 
           totalGross: gross, 
@@ -201,7 +256,6 @@ export default function AccountsDashboard() {
     setCustomPrices(prev => ({ ...prev, [id]: newPrice }))
   }
 
-  // Action Pathway 1: Processing physical money from Walk-In clients
   const confirmPaymentAndTransfer = async (studentId, method) => {
     if (isProcessing) return;
     
@@ -237,7 +291,6 @@ export default function AccountsDashboard() {
     }
   }
 
-  // Action Pathway 2: Validating digital Flutterwave parameters from Business Centers
   const handleBusinessCenterRelease = async (studentId) => {
     if (isProcessing) return;
     const student = pendingStudents.find(s => s.id === studentId);
@@ -501,6 +554,7 @@ export default function AccountsDashboard() {
         )}
       </button>
 
+      {/* SIDE CHAT DRAWER FRAME */}
       {isChatOpen && (
         <div className="fixed inset-0 bg-blue-950/40 backdrop-blur-sm z-[50]" onClick={() => setIsChatOpen(false)} />
       )}

@@ -129,10 +129,10 @@ export default function ServiceQueue() {
         personalQuery = personalQuery.gte('completed_at', `${customDate}T00:00:00`).lte('completed_at', `${customDate}T23:59:59`)
       }
 
-      // 2. COMPILE GLOBAL SUPERVISOR OVERHEAD ARRAY
+      // 2. COMPILE GLOBAL SUPERVISOR OVERHEAD ARRAY (Now explicitly querying staff_commission)
       let globalManagerQuery = supabase
         .from('students')
-        .select('id, completed_at, amount_paid, institution_cost, is_supervisor_payout_completed')
+        .select('id, completed_at, amount_paid, institution_cost, staff_commission, is_supervisor_payout_completed')
         .eq('status', 'Completed')
         .eq('is_deleted', false)
         .gte('completed_at', `${supStartDate}T00:00:00`)
@@ -155,16 +155,48 @@ export default function ServiceQueue() {
 
       let totalComm = completedPersonalData?.reduce((acc, job) => acc + Number(job.staff_commission || 0) + Number(job.consultant_commission || 0), 0) || 0
 
-      // Itemized calculations capped per-row mapping logic utilizing our new calculatedRate variable
-      let accumulatedOverhead = 0
+      // Map global items into separate daily groupings to safely apply daily profit share ceilings
+      const jobsByDay = {}
       completedGlobalData?.forEach(job => {
         if (job.is_supervisor_payout_completed) return
-        const netProfit = Number(job.amount_paid || 0) - Number(job.institution_cost || 0)
-        if (netProfit > 0) {
-          let cut = netProfit * calculatedRate
-          if (cut > 17500) cut = 17500 
-          accumulatedOverhead += cut
+        if (!job.completed_at) return
+        
+        const day = job.completed_at.split('T')[0]
+        if (!jobsByDay[day]) {
+          jobsByDay[day] = []
         }
+        jobsByDay[day].push(job)
+      })
+
+      let accumulatedOverhead = 0
+
+      // Compute isolated daily metrics chronologically to trigger the cap perfectly
+      Object.keys(jobsByDay).forEach(day => {
+        // Sort tasks from earliest completed time to latest completed time
+        jobsByDay[day].sort((a, b) => new Date(a.completed_at) - new Date(b.completed_at))
+        
+        let dailyRunningCut = 0
+        jobsByDay[day].forEach(job => {
+          const paid = Number(job.amount_paid || 0)
+          const inst = Number(job.institution_cost || 0)
+          const staffComm = Number(job.staff_commission || 0)
+          
+          // MATH RULE 1 UPDATE: Net Margin = Amount Paid - Institution Cost - Staff Commission
+          const netProfitMargin = paid - inst - staffComm
+          
+          if (netProfitMargin > 0) {
+            let cut = netProfitMargin * calculatedRate
+            
+            // MATH RULE 2 UPDATE: Enforce cap rules across company daily balance bounds
+            if (dailyRunningCut + cut > 17500) {
+              cut = 17500 - dailyRunningCut
+            }
+            if (cut < 0) cut = 0
+            
+            dailyRunningCut += cut
+            accumulatedOverhead += cut
+          }
+        })
       })
 
       setPendingQueue(pendingData || [])
@@ -372,7 +404,7 @@ export default function ServiceQueue() {
             <h2 className="text-4xl font-black tracking-tighter text-blue-600">₦{stats.commission.toLocaleString()}</h2>
           </div>
 
-          {/* CARD 3: DECOUPLED SUPERVISOR DYNAMIC CUT OVERHEAD PANEL BLOCK */}
+          {/* CARD 3: DECOUPLED SUPERVISOR METRIC CONTAINER */}
           {isPrivilegedRole && (
             <div className="lg:col-span-4 bg-white p-6 rounded-[2.5rem] border-4 border-amber-500 shadow-sm bg-gradient-to-br from-amber-50/20 to-white flex flex-col justify-between gap-4">
               <div>
@@ -422,7 +454,7 @@ export default function ServiceQueue() {
           </Link>
         </div>
 
-        {/* NEO-BRUTALIST QUICK LINK CARD BANNER */}
+        {/* PERFORMANCE QUICK LINK BANNER CONTAINER */}
         <div className="mb-10">
           <Link href="/activity-log">
             <div className="bg-white border-4 border-blue-950 p-6 rounded-[2rem] flex items-center justify-between shadow-[6px_6px_0px_0px_rgba(26,54,93,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[4px_4px_0px_0px_rgba(26,54,93,1)] transition-all cursor-pointer group">
@@ -462,7 +494,7 @@ export default function ServiceQueue() {
           </div>
         )}
 
-        {/* PENDING QUEUE */}
+        {/* PENDING QUEUE WORKFLOW */}
         <div className="bg-white rounded-[3rem] border-4 border-blue-950 overflow-hidden shadow-[6px_6px_0px_0px_rgba(26,54,93,1)] mb-12">
             <div className="p-8 border-b-4 border-blue-950 bg-slate-50/50 flex flex-col sm:flex-row justify-between items-center gap-4">
                <h3 className="text-[11px] font-black text-blue-950 uppercase tracking-[0.2em]">Queue Workflow Ledger ({filteredQueue.length})</h3>
@@ -507,7 +539,7 @@ export default function ServiceQueue() {
         </div>
       </div>
 
-      {/* --- SLIDE-OUT CHAT SYSTEM --- */}
+      {/* --- SLIDE-OUT CHAT SYSTEM DRAWERS --- */}
       <button 
         onClick={() => setIsChatOpen(!isChatOpen)}
         className={`fixed bottom-8 right-8 z-[70] flex items-center justify-center w-16 h-16 rounded-full border-4 border-blue-950 shadow-2xl transition-all duration-300 ${

@@ -85,14 +85,23 @@ export default function PaymentReconciliation() {
         })
       })
 
-      const result = await response.json()
+      // SAFE CONVERSION GAURDRAIL: Safely intercept raw text responses before parsing to avoid crash states
+      const rawText = await response.text()
+      let result = {}
+      
+      try {
+        result = JSON.parse(rawText)
+      } catch (jsonErr) {
+        console.error("Server responded with non-JSON text output data:", rawText)
+        throw new Error(`Server API Endpoint crashed (Status ${response.status}). Check backend server route logs.`)
+      }
 
       if (response.ok) {
-        setMessage({ type: 'success', text: result.message })
+        setMessage({ type: 'success', text: result.message || 'Payment clearing synchronized successfully!' })
         setTxRef('')
         setManualData({ p_full_name: '', p_phone_number: '', p_jamb_code: '', p_reg_number: '', p_service_id: '', p_agent_id: userProfile.role === 'Partner Agent' ? userProfile.id : '' })
       } else {
-        setMessage({ type: 'error', text: result.message })
+        setMessage({ type: 'error', text: result.message || 'Validation rejected by system backend verification.' })
       }
     } catch (err) {
       setMessage({ type: 'error', text: 'Network processing loop disruption: ' + err.message })
