@@ -176,7 +176,7 @@ export default function CommissionReport() {
         setTotalPayout(staffArray.reduce((sum, item) => sum + item.total_unpaid, 0))
         setTotalSupervisorPayout(totalCompanySupervisorUnpaidPool)
       } else {
-        // TAB FIX: Selects records where EITHER staff payout OR supervisor payout is marked true
+        // TAB FIX: Unified logical OR formatting statement block using proper explicit syntax layout mapping
         const { data: pastJobs, error: historyError } = await supabase
           .from('students')
           .select(`
@@ -193,8 +193,6 @@ export default function CommissionReport() {
           `)
           .eq('status', 'Completed')
           .or('is_payout_completed.eq.true,is_supervisor_payout_completed.eq.true')
-          .gte('completed_at', `${startDate}T00:00:00`)
-          .lte('completed_at', `${endDate}T23:59:59`)
           .order('completed_at', { ascending: false })
 
         if (historyError) throw historyError
@@ -204,7 +202,6 @@ export default function CommissionReport() {
     } catch (err) {
       console.error("Report error:", err.message)
     } finally {
-      // FIXED: Swapped 'desert' out for the authentic keyword 'finally'
       setLoading(false)
     }
   }
@@ -372,7 +369,7 @@ export default function CommissionReport() {
                 {loading ? (
                   <tr><td colSpan="4" className="p-10 text-center font-black text-slate-300 uppercase tracking-widest animate-pulse">Syncing History Ledger...</td></tr>
                 ) : paymentHistory.length === 0 ? (
-                  <tr><td colSpan="4" className="p-10 text-center text-slate-400 italic text-xs uppercase">No paid history entries found inside this date range.</td></tr>
+                  <tr><td colSpan="4" className="p-10 text-center text-slate-400 italic text-xs uppercase">No paid history entries found.</td></tr>
                 ) : paymentHistory.map((item) => {
                   return (
                     <tr key={item.id} className="hover:bg-slate-50 transition-colors">
