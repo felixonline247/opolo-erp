@@ -45,7 +45,7 @@ export default function CommissionReport() {
   const fetchCommissionData = async () => {
     setLoading(true)
     try {
-      // 🚀 FETCH DYNAMIC GLOBAL SETTINGS PERCENTAGE OVERRIDE
+      // 1. Fetch Dynamic Global Settings Percentage Override
       const { data: globalSettings } = await supabase
         .from('settings')
         .select('supervisor_percentage')
@@ -54,7 +54,7 @@ export default function CommissionReport() {
 
       const calculatedRate = globalSettings?.supervisor_percentage 
         ? Number(globalSettings.supervisor_percentage) / 100 
-        : 0.025 // Standard 2.5% structural baseline fallback
+        : 0.025 // Standard 2.5% fallback baseline rate
 
       if (activeTab === 'unpaid') {
         const { data: jobs, error: jobsError } = await supabase
@@ -107,19 +107,49 @@ export default function CommissionReport() {
           return acc
         }, {})
 
-        // 🚀 CALCULATE GLOBAL OVERHEAD POOL: Process all row items within interval metrics
+        // 2. Group all completed jobs by calendar day to enforce the Version 3.0 Daily Cap Rule
+        const completedJobsByDay = {}
+        jobs.forEach(curr => {
+          if (curr.is_supervisor_payout_completed) return
+          if (!curr.completed_at) return
+          const day = curr.completed_at.split('T')[0]
+          if (!completedJobsByDay[day]) {
+            completedJobsByDay[day] = []
+          }
+          completedJobsByDay[day].push(curr)
+        })
+
+        // 3. Compute Supervisor Cuts sequentially day-by-day
         let totalCompanySupervisorUnpaidPool = 0
         let aggregateSupervisedJobsCount = 0
 
-        jobs.forEach(curr => {
-          if (curr.is_supervisor_payout_completed) return
-          const netProfit = Number(curr.amount_paid || 0) - Number(curr.institution_cost || 0)
-          if (netProfit > 0) {
-            let lineOverrideCut = netProfit * calculatedRate
-            if (lineOverrideCut > 17500) lineOverrideCut = 17500 // Ceiling Cap
-            totalCompanySupervisorUnpaidPool += lineOverrideCut
-            aggregateSupervisedJobsCount += 1
-          }
+        Object.keys(completedJobsByDay).forEach(day => {
+          // Sort tasks chronologically from oldest to newest
+          completedJobsByDay[day].sort((a, b) => new Date(a.completed_at) - new Date(b.completed_at))
+          
+          let dailyRunningCut = 0
+          completedJobsByDay[day].forEach(curr => {
+            const paid = Number(curr.amount_paid || 0)
+            const inst = Number(curr.institution_cost || 0)
+            const staffComm = Number(curr.staff_commission || 0)
+            
+            // MATH RULE 1 UPDATE: Net Margin = Amount Paid - Institution Cost - Staff Commission
+            const netProfitMargin = paid - inst - staffComm
+            
+            if (netProfitMargin > 0) {
+              let cut = netProfitMargin * calculatedRate
+              
+              // MATH RULE 2 UPDATE: Enforce rigid global ceiling cap of ₦17,500 daily
+              if (dailyRunningCut + cut > 17500) {
+                cut = 17500 - dailyRunningCut
+              }
+              if (cut < 0) cut = 0
+              
+              dailyRunningCut += cut
+              totalCompanySupervisorUnpaidPool += cut
+              aggregateSupervisedJobsCount += 1
+            }
+          })
         })
 
         // Distribute the company pool uniformly to all active Supervisor accounts on the dashboard
@@ -146,6 +176,7 @@ export default function CommissionReport() {
         setTotalPayout(staffArray.reduce((sum, item) => sum + item.total_unpaid, 0))
         setTotalSupervisorPayout(totalCompanySupervisorUnpaidPool)
       } else {
+        // TAB FIX: Selects records where EITHER staff payout OR supervisor payout is marked true
         const { data: pastJobs, error: historyError } = await supabase
           .from('students')
           .select(`
@@ -155,11 +186,13 @@ export default function CommissionReport() {
             completed_at,
             amount_paid,
             institution_cost,
+            is_payout_completed,
             is_supervisor_payout_completed,
             profiles!students_completed_by_fkey(full_name, email, role),
             services(service_name)
           `)
           .eq('status', 'Completed')
+          .or('is_payout_completed.eq.true,is_supervisor_payout_completed.eq.true')
           .gte('completed_at', `${startDate}T00:00:00`)
           .lte('completed_at', `${endDate}T23:59:59`)
           .order('completed_at', { ascending: false })
@@ -171,6 +204,7 @@ export default function CommissionReport() {
     } catch (err) {
       console.error("Report error:", err.message)
     } finally {
+      // FIXED: Swapped 'desert' out for the authentic keyword 'finally'
       setLoading(false)
     }
   }
@@ -200,7 +234,6 @@ export default function CommissionReport() {
     }
   }
 
-  // 🚀 Clear Supervisor Overhead Override Function Company-Wide across the current window
   const handleSupervisorPayout = async (sup) => {
     if (!confirm(`Mark supervisor overhead override pool inside this date range as settled and cleared?`)) return
     setProcessingId(`sup-${sup.id}`)
@@ -258,7 +291,6 @@ export default function CommissionReport() {
             <h2 className="text-4xl font-black tracking-tighter italic">₦{totalPayout.toLocaleString()}</h2>
           </div>
           
-          {/* Dynamic Percentage Heading Sub-Card Tracker */}
           <div className="bg-amber-500 rounded-[2rem] p-8 text-blue-950 shadow-xl relative overflow-hidden border-2 border-blue-950 shadow-[4px_4px_0px_0px_rgba(26,54,93,1)]">
             <p className="text-[10px] font-black uppercase opacity-70 tracking-wider mb-2">⚡ Supervisor Dynamic Override Pool (Capped)</p>
             <h2 className="text-4xl font-black tracking-tighter italic">₦{totalSupervisorPayout.toLocaleString()}</h2>
@@ -326,21 +358,22 @@ export default function CommissionReport() {
               </div>
             </>
           ) : (
+            /* HISTORICAL LOG SHEET TAB VIEW */
             <table className="w-full text-left border-collapse">
               <thead className="bg-purple-950 text-white">
                 <tr className="text-[10px] font-black uppercase tracking-widest">
                   <th className="p-7">Cleared Student Task</th>
-                  <th className="p-7">Type</th>
-                  <th className="p-7 text-right">Settlement Metrics</th>
+                  <th className="p-7">Handled By</th>
+                  <th className="p-7 text-right">Settlement Verification Flags</th>
                   <th className="p-7 text-right">Clearing Date</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {paymentHistory.map((item) => {
-                  const profit = Number(item.amount_paid || 0) - Number(item.institution_cost || 0);
-                  let historicalSupCut = profit > 0 ? profit * calculatedRate : 0;
-                  if (historicalSupCut > 17500) historicalSupCut = 17500;
-
+                {loading ? (
+                  <tr><td colSpan="4" className="p-10 text-center font-black text-slate-300 uppercase tracking-widest animate-pulse">Syncing History Ledger...</td></tr>
+                ) : paymentHistory.length === 0 ? (
+                  <tr><td colSpan="4" className="p-10 text-center text-slate-400 italic text-xs uppercase">No paid history entries found inside this date range.</td></tr>
+                ) : paymentHistory.map((item) => {
                   return (
                     <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                       <td className="p-7">
@@ -348,16 +381,16 @@ export default function CommissionReport() {
                         <p className="text-[9px] text-purple-600 font-bold uppercase">{item.services?.service_name || 'Service Task'}</p>
                       </td>
                       <td className="p-7">
-                        <p className="font-black text-blue-950 text-xs uppercase">{item.profiles?.full_name}</p>
+                        <p className="font-black text-blue-950 text-xs uppercase">{item.profiles?.full_name || 'System Operator'}</p>
                         <span className="text-[9px] font-bold text-slate-400 uppercase bg-slate-100 px-2 py-0.5 rounded">{item.profiles?.role || 'Staff'}</span>
                       </td>
                       <td className="p-7 text-right text-xs font-mono font-bold">
-                        <p className="text-green-600 font-black">Staff Comm: ₦{Number(item.staff_commission || 0).toLocaleString()}</p>
-                        {item.profiles?.role === 'Supervisor' && (
-                          <p className={item.is_supervisor_payout_completed ? "text-blue-600 font-black" : "text-amber-600 font-black"}>
-                            Sup Override: ₦{historicalSupCut.toLocaleString()} [{item.is_supervisor_payout_completed ? "PAID" : "UNPAID"}]
-                          </p>
-                        )}
+                        <p className={item.is_payout_completed ? "text-green-600 font-black" : "text-slate-400"}>
+                          Staff Comm: ₦{Number(item.staff_commission || 0).toLocaleString()} [{item.is_payout_completed ? "PAID" : "UNPAID"}]
+                        </p>
+                        <p className={item.is_supervisor_payout_completed ? "text-blue-600 font-black" : "text-slate-400"}>
+                          Supervisor Share Status: [{item.is_supervisor_payout_completed ? "PAID & SETTLED" : "UNPAID OVERHEAD"}]
+                        </p>
                       </td>
                       <td className="p-7 text-right text-xs font-bold text-slate-500 uppercase">
                         {new Date(item.completed_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
